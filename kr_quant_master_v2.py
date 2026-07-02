@@ -128,7 +128,7 @@ for i, row in df_master.iterrows():
         continue
 
 # -------------------------------------------------------------
-# 3단계: 결과 저장 (C:\mybot\data_cache 강제 고정)
+# 3단계: 결과 저장 (data_cache 강제 고정)
 # -------------------------------------------------------------
 print(f"\n✅ 스캔 완료! 필터링을 통과한 알짜 우량주 개수: {len(data_list)}개")
 
@@ -137,7 +137,7 @@ if len(data_list) > 0:
     df = df.sort_values(by='OCF', ascending=False)
     
     # 무조건 전용 금고로 직행
-    save_dir = r"C:\mybot\data_cache"
+    save_dir = r"data_cache"
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
         

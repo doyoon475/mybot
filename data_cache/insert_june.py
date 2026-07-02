@@ -2,7 +2,7 @@ import sqlite3
 import pandas as pd
 import os
 
-save_folder = r"C:\mybot\data_cache"
+save_folder = r"data_cache"
 db_file = os.path.join(save_folder, "quant_history.db")
 csv_file = os.path.join(save_folder, "AQR_Pro_Edition_20260617_234830.csv")
 

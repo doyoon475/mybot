@@ -136,7 +136,7 @@ final_df = df[final_columns]
 # =========================================================
 # 🔒 무조건 전용 금고에 강제 저장 (숨바꼭질 완벽 차단)
 # =========================================================
-save_folder = r"C:\mybot\data_cache"
+save_folder = r"data_cache"
 
 if not os.path.exists(save_folder): 
     os.makedirs(save_folder)

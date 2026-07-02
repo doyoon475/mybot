@@ -35,7 +35,7 @@ jobs:
         python us_quant_bot.py
         
         # 3. 흩어진 엑셀 파일들을 DB(quant_history.db)로 합치기
-        python db_builder.py
+        python data_cache/db_builder.py
 
     - name: 5. 갱신된 DB를 내 깃허브 창고에 덮어씌워 저장(Push)하기
       run: |

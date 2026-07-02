@@ -3,7 +3,7 @@ import pandas as pd
 import os
 
 # 1. 공통 설정 (경로 및 이번 달 날짜)
-save_folder = r"C:\mybot\data_cache"
+save_folder = r"data_cache"
 db_file = os.path.join(save_folder, "quant_history.db")
 
 current_date = '2026-07-01'

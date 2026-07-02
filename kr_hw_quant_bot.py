@@ -248,9 +248,9 @@ for item in raw_data_list:
     })
 
 # =========================================================================
-# 절대 경로 강제 지정 (무조건 C:\mybot\data_cache 로 저장)
+# 절대 경로 강제 지정 (무조건 data_cache 로 저장)
 # =========================================================================
-save_folder = r"C:\mybot\data_cache"
+save_folder = r"data_cache"
 
 if not os.path.exists(save_folder): 
     os.makedirs(save_folder)

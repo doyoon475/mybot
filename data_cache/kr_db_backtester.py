@@ -21,7 +21,7 @@ MONTHLY_INV = 500000      # 매월 적립금 (50만원)
 START_DATE = '2021-01-01' # 👈 테스트 시작일
 END_DATE = '2026-07-01'   # 👈 테스트 종료일
 
-db_path = r"C:\mybot\data_cache\quant_history.db"
+db_path = r"data_cache\quant_history.db"
 
 if not os.path.exists(db_path):
     print("❌ 데이터베이스 파일을 찾을 수 없습니다. 경로를 확인해주세요.")

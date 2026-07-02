@@ -37,7 +37,7 @@ print("🚀 도윤님 맞춤형 백테스팅 엔진 가동 중...\n")
 # =========================================================
 # 2. 7월 한국장 최종 엑셀 파일에서 1~20위 종목명 불러오기
 # =========================================================
-file_path = r"C:\mybot\data_cache\7월_최종_퀀트랭킹.xlsx"
+file_path = r"data_cache/7월_최종_퀀트랭킹.xlsx"
 try:
     df_rank = pd.read_excel(file_path)
     top_names = df_rank.head(TOP_N)['종목명'].tolist()
