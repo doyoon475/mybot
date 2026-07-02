@@ -34,12 +34,13 @@ if df_main.empty:
 else:
     available_dates = sorted(df_main['Date'].unique(), reverse=True)
     latest_date = available_dates[0]
-    df_latest = df_main[df_main['Date'] == latest_date].copy()
+    # drop_duplicates를 추가하여 같은 날짜의 중복 종목을 제거 (가장 마지막에 구워진 데이터만 보존)
+    df_latest = df_main[df_main['Date'] == latest_date].drop_duplicates(subset=['종목명'], keep='last').copy()
     
     has_prev_data = len(available_dates) > 1
     if has_prev_data:
         prev_date = available_dates[1]
-        df_prev = df_main[df_main['Date'] == prev_date].copy()
+        df_prev = df_main[df_main['Date'] == prev_date].drop_duplicates(subset=['종목명'], keep='last').copy()
     else:
         prev_date = None
 
