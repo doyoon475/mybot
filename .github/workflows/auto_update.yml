@@ -25,7 +25,6 @@ jobs:
         pip install -r requirements.txt
 
     - name: 4. 퀀트 데이터 수집 및 DB 갱신 봇 실행
-      - name: 4. 퀀트 데이터 수집 및 DB 갱신 봇 실행
       run: |
         # 1. 한국장 스캔 (마스터 -> 본체)
         python kr_quant_master_v2.py
