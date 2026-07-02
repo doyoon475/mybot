@@ -1,0 +1,40 @@
+name: Monthly Quant DB Auto-Update
+
+on:
+  schedule:
+    # 매월 1일 자정(UTC 기준, 한국 시간 오전 9시)에 자동 실행
+    - cron: '0 0 1 * *'
+  workflow_dispatch: # 깃허브 사이트에서 수동 버튼으로 테스트할 수 있게 해주는 마법의 주문
+
+jobs:
+  update-db:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 1. 내 깃허브 창고에서 최신 코드 꺼내오기
+      uses: actions/checkout@v4
+
+    - name: 2. 클라우드에 파이썬 3.12 설치하기
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: 3. 준비물(requirements.txt) 설치하기
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: 4. 퀀트 데이터 수집 및 DB 갱신 봇 실행
+      run: |
+        # 주의: 아래 파일명들을 도윤님이 매달 1일에 실행해야 하는 실제 봇 파일명으로 바꿔주세요!
+        python kr_hw_quant_bot.py 
+        # 만약 순서대로 여러 개를 실행해야 한다면 아래처럼 줄을 바꿔서 계속 적어주면 됩니다.
+        # python db_builder.py
+
+    - name: 5. 갱신된 DB를 내 깃허브 창고에 덮어씌워 저장(Push)하기
+      run: |
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git add .
+        git commit -m "🚀 매월 1일 DB 자동 갱신 완료" || echo "변경된 데이터가 없습니다."
+        git push
