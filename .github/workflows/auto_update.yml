@@ -25,11 +25,18 @@ jobs:
         pip install -r requirements.txt
 
     - name: 4. 퀀트 데이터 수집 및 DB 갱신 봇 실행
+      - name: 4. 퀀트 데이터 수집 및 DB 갱신 봇 실행
       run: |
-        # 주의: 아래 파일명들을 도윤님이 매달 1일에 실행해야 하는 실제 봇 파일명으로 바꿔주세요!
-        python kr_hw_quant_bot.py 
-        # 만약 순서대로 여러 개를 실행해야 한다면 아래처럼 줄을 바꿔서 계속 적어주면 됩니다.
-        # python db_builder.py
+        # 1. 한국장 스캔 (마스터 -> 본체)
+        python kr_quant_master_v2.py
+        python kr_hw_quant_bot.py
+        
+        # 2. 미국장 스캔 (마스터 -> 본체)
+        python us_quant_master.py
+        python us_quant_bot.py
+        
+        # 3. 흩어진 엑셀 파일들을 DB(quant_history.db)로 합치기
+        python db_builder.py
 
     - name: 5. 갱신된 DB를 내 깃허브 창고에 덮어씌워 저장(Push)하기
       run: |
