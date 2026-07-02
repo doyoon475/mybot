@@ -13,7 +13,7 @@ st.title("🧪 도윤's 다이내믹 퀀트 랩 (시즌 3: 순위 변동 추적 
 
 @st.cache_data
 def load_db_data():
-    db_path = r"data_cache\quant_history.db"
+    db_path = "data_cache/quant_history.db"
     if not os.path.exists(db_path):
         return pd.DataFrame()
     conn = sqlite3.connect(db_path)
