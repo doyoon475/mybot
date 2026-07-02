@@ -1,0 +1,42 @@
+import sqlite3
+import pandas as pd
+import os
+
+# =========================================================
+# 1. 엑셀 파일 및 DB 경로 설정
+# =========================================================
+save_folder = r"C:\mybot\data_cache"
+excel_file = os.path.join(save_folder, "US_AQR_Pro_Edition_20260701.xlsx")
+db_file = os.path.join(save_folder, "quant_history.db")
+
+print("🚀 퀀트 데이터베이스 구축을 시작합니다...")
+
+try:
+    # =========================================================
+    # 2. 오늘 뽑은 엑셀 파일 읽어오기
+    # =========================================================
+    df = pd.read_excel(excel_file)
+    
+    # DB에 쌓을 때 나중에 헷갈리지 않도록 '날짜' 컬럼표를 강제로 하나 추가합니다.
+    df['Date'] = '2026-07-01'
+    
+    # =========================================================
+    # 3. SQLite DB에 밀어넣기 (Insert)
+    # =========================================================
+    # DB 파일에 연결 (파일이 없으면 봇이 알아서 새로 만듭니다!)
+    conn = sqlite3.connect(db_file)
+    
+    # 'us_quant_ranking'이라는 테이블(표)에 엑셀 데이터를 통째로 복사해 넣습니다.
+    # if_exists='append': 기존 데이터가 있으면 그 밑에 계속 이어서 쌓으라는 뜻입니다.
+    df.to_sql('us_quant_ranking', conn, if_exists='append', index=False)
+    
+    # 문 닫기
+    conn.close()
+    
+    print(f"🎉 성공! 엑셀 데이터가 DB에 무사히 저장되었습니다.")
+    print(f"📂 DB 위치: {db_file}")
+    
+except FileNotFoundError:
+    print(f"❌ 엑셀 파일을 찾을 수 없습니다. 경로를 확인해주세요: {excel_file}")
+except Exception as e:
+    print(f"⚠️ 에러 발생: {e}")
