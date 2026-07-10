@@ -115,21 +115,87 @@ else:
     st.markdown(f"**최신 데이터 기준일:** {latest_date} | **시스템 상태:** 실시간 연동 완료")
     st.divider()
 
-    # =========================================================
-    # 2. 사이드바: 🎛️ 팩터 가중치 슬라이더
-    # =========================================================
-    st.sidebar.header("🎛️ 나만의 팩터 비중 조절")
-    w_value = st.sidebar.slider("💰 가치(Value) 가중치", 0, 100, 33)
-    w_quality = st.sidebar.slider("💎 우량(Quality) 가중치", 0, 100, 33)
-    w_momentum = st.sidebar.slider("🚀 모멘텀(Momentum) 가중치", 0, 100, 34)
-    
-    total_weight = w_value + w_quality + w_momentum
-    if total_weight == 0: total_weight = 1
-    
-    real_w_val = w_value / total_weight
-    real_w_qual = w_quality / total_weight
-    real_w_mom = w_momentum / total_weight
+    # =======================================================================
+    # 🎛️ [좌측 사이드바] 전문가용 세부 지표 컨트롤러 (100% 자동 보정 엔진)
+    # =======================================================================
+    st.sidebar.markdown("### 🎛️ 나만의 팩터 설계소")
+    market = st.sidebar.radio("🌍 거래소 선택", ["🇰🇷 한국 (KOSPI/KOSDAQ)", "🇺🇸 미국 (NYSE/NASDAQ)"])
 
+    st.sidebar.markdown("#### ■ 1단계: 핵심 팩터 비중 (대분류)")
+    w_value = st.sidebar.slider("가치 (Value) 가중치", 0, 100, 50)
+    w_quality = st.sidebar.slider("우량 (Quality) 가중치", 0, 100, 30)
+    w_momentum = st.sidebar.slider("모멘텀 (Momentum) 가중치", 0, 100, 20)
+
+    # [백엔드 로직 1] 대분류 정규화 계산 (세 슬라이더의 합을 항상 100% 비율로 환산)
+    total_macro = w_value + w_quality + w_momentum
+    if total_macro > 0:
+        real_w_val = w_value / total_macro  # 변수명 유지 (아래 3. 실시간 점수 계산 코드와 호환)
+        real_w_qual = w_quality / total_macro
+        real_w_mom = w_momentum / total_macro
+        
+        # 화면 표시용(100분율)
+        disp_w_val = real_w_val * 100
+        disp_w_qual = real_w_qual * 100
+        disp_w_mom = real_w_mom * 100
+    else:
+        real_w_val = real_w_qual = real_w_mom = 0
+        disp_w_val = disp_w_qual = disp_w_mom = 0
+
+    st.sidebar.markdown("#### ■ 2단계: 세부 지표 마이크로 튜닝 (소분류)")
+
+    # ① 가치(Value) 세부 지표 설정
+    with st.sidebar.expander("🔽 가치(Value) 세부 지표 비율 설정", expanded=True):
+        sub_pcr = st.slider("💡 PCR (영업현금흐름)", 0, 100, 40)
+        sub_pbr = st.slider("🏢 PBR (순자산/안전판)", 0, 100, 30)
+        sub_ev = st.slider("🤝 EV/EBITDA (총가치)", 0, 100, 20)
+        sub_per = st.slider("💰 PER (단기 순이익)", 0, 100, 10)
+        
+        total_val_sub = sub_pcr + sub_pbr + sub_ev + sub_per
+        if total_val_sub > 0:
+            final_pcr = (sub_pcr / total_val_sub) * disp_w_val
+            final_pbr = (sub_pbr / total_val_sub) * disp_w_val
+            final_ev = (sub_ev / total_val_sub) * disp_w_val
+            final_per = (sub_per / total_val_sub) * disp_w_val
+        else:
+            final_pcr = final_pbr = final_ev = final_per = 0
+
+    # ② 우량(Quality) 세부 지표 설정
+    with st.sidebar.expander("🔽 우량(Quality) 세부 지표 비율 설정", expanded=False):
+        sub_fscore = st.slider("🛡️ F-Score (재무 건전성)", 0, 100, 50)
+        sub_roe = st.slider("📈 ROE & ROA (수익성)", 0, 100, 30)
+        sub_accruals = st.slider("📉 발생액(Accruals) 비율", 0, 100, 20)
+        
+        total_qual_sub = sub_fscore + sub_roe + sub_accruals
+        if total_qual_sub > 0:
+            final_fscore = (sub_fscore / total_qual_sub) * disp_w_qual
+            final_roe = (sub_roe / total_qual_sub) * disp_w_qual
+            final_accruals = (sub_accruals / total_qual_sub) * disp_w_qual
+        else:
+            final_fscore = final_roe = final_accruals = 0
+
+    # ③ 모멘텀(Momentum) 세부 지표 설정
+    with st.sidebar.expander("🔽 모멘텀(Momentum) 세부 지표 비율 설정", expanded=False):
+        sub_price_mom = st.slider("📈 12-1 가격 모멘텀", 0, 100, 60)
+        sub_earnings_mom = st.slider("📊 이익 추정치 상향", 0, 100, 40)
+        
+        total_mom_sub = sub_price_mom + sub_earnings_mom
+        if total_mom_sub > 0:
+            final_price_mom = (sub_price_mom / total_mom_sub) * disp_w_mom
+            final_earnings_mom = (sub_earnings_mom / total_mom_sub) * disp_w_mom
+        else:
+            final_price_mom = final_earnings_mom = 0
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("#### 🧮 시스템 자동 보정 결과 (총합 100%)")
+    st.sidebar.caption(f"**[가치 {disp_w_val:.1f}%]** PCR: {final_pcr:.1f}% | PBR: {final_pbr:.1f}% | EV: {final_ev:.1f}% | PER: {final_per:.1f}%")
+    st.sidebar.caption(f"**[우량 {disp_w_qual:.1f}%]** F-Score: {final_fscore:.1f}% | ROE: {final_roe:.1f}% | 발생액: {final_accruals:.1f}%")
+    st.sidebar.caption(f"**[모멘텀 {disp_w_mom:.1f}%]** 가격추세: {final_price_mom:.1f}% | 이익상향: {final_earnings_mom:.1f}%")
+
+    total_check = (final_pcr + final_pbr + final_ev + final_per + 
+                   final_fscore + final_roe + final_accruals + 
+                   final_price_mom + final_earnings_mom)
+    st.sidebar.success(f"✅ 백엔드 최종 팩터 결합도: **{total_check:.1f}%**")
+    
     # =========================================================
     # 3. 🧠 실시간 점수 및 순위 변동 정밀 계산
     # =========================================================
