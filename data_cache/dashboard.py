@@ -10,7 +10,68 @@ import FinanceDataReader as fdr
 # =========================================================
 st.set_page_config(page_title="도윤's 고급 퀀트 랩", layout="wide")
 st.title("🧪 도윤's 다이내믹 퀀트 랩 (시즌 3: 순위 변동 추적 엔진)")
+import FinanceDataReader as fdr
 
+# =======================================================================
+# 🚨 [상단 전광판] 실시간 시장 국면 인디케이터 엔진
+# =======================================================================
+@st.cache_data(ttl=3600) # 1시간마다 한 번씩만 코스피 지수를 새로고침하여 속도 최적화
+def get_market_indicator():
+    # KOSPI 최근 2년치 데이터 불러오기
+    kospi_df = fdr.DataReader('KS11', '2022-01-01')
+    
+    # 200일 이동평균선 및 최근 60일 고점 대비 낙폭(DD) 계산
+    kospi_df['MA200'] = kospi_df['Close'].rolling(window=200).mean()
+    kospi_df['Peak60'] = kospi_df['Close'].rolling(window=60).max()
+    kospi_df['Drawdown'] = ((kospi_df['Close'] - kospi_df['Peak60']) / kospi_df['Peak60']) * 100
+    
+    return kospi_df.iloc[-1], kospi_df.iloc[-2] # 최신일과 전일 데이터 반환
+
+try:
+    current_data, prev_data = get_market_indicator()
+    current_price = current_data['Close']
+    prev_price = prev_data['Close']
+    ma200_current = current_data['MA200']
+    dd_current = current_data['Drawdown']
+    
+    # 시장 국면 판단 로직
+    if current_price < ma200_current or dd_current <= -10.0:
+        regime = "공포 국면 😨"
+        bg_color = "error"
+        advice = "⚠️ 변동성이 커진 하락장입니다. 모멘텀 비중을 낮추고, F-Score가 높은 우량주와 현금 비중 확대를 추천합니다."
+    elif current_price > ma200_current * 1.15: # 200일선 대비 15% 이상 과열시
+        regime = "과열 국면 🔥"
+        bg_color = "warning"
+        advice = "📢 시장이 다소 과열되었습니다. 달리는 말(모멘텀)에 올라타되, PCR 등 현금흐름 팩터로 안전판을 확보하세요."
+    else:
+        regime = "중립 국면 ⚖️"
+        bg_color = "info"
+        advice = "✅ 평온한 시장입니다. 나만의 세부 가중치 리밸런싱 전략을 유지하기 좋은 타이밍입니다."
+
+    # 화면 렌더링
+    st.markdown("### 📡 실시간 시장 국면 레이더")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric(label="현재 KOSPI 지수", value=f"{current_price:,.2f}", delta=f"{current_price - prev_price:,.2f}")
+    with col2:
+        st.metric(label="시장 심리 국면", value=regime)
+    with col3:
+        st.metric(label="최근 60일 고점 대비 낙폭(DD)", value=f"{dd_current:.2f}%", delta=f"{dd_current:.2f}%")
+
+    # 국면별 맞춤 가이드라인 알림창
+    if bg_color == "error":
+        st.error(advice)
+    elif bg_color == "warning":
+        st.warning(advice)
+    else:
+        st.info(advice)
+        
+    st.markdown("---") # 아래 랭킹표와의 시각적 분리선
+
+except Exception as e:
+    st.warning("현재 실시간 KOSPI 데이터를 불러올 수 없습니다.")
+# =======================================================================
 @st.cache_data
 def load_db_data():
     db_path = "data_cache/quant_history.db"
