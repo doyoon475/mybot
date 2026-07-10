@@ -21,26 +21,15 @@ def load_db_data():
     conn.close()
     return df
 
-@st.cache_data
-def get_krx_mapping():
-    try:
-        # 1차 시도: 기본 KRX 전체 불러오기
-        krx = fdr.StockListing('KRX')
-    except Exception as e:
-        # 2차 시도 (우회): KOSPI와 KOSDAQ 따로 불러와서 합치기
-        try:
-            kospi = fdr.StockListing('KOSPI')
-            kosdaq = fdr.StockListing('KOSDAQ')
-            krx = pd.concat([kospi, kosdaq], ignore_index=True)
-        except Exception as e2:
-            # 3차 시도: 대체 URL 사용
-            krx = fdr.StockListing('KRX-DESC')
-            
-    # 이름과 코드를 매핑하는 딕셔너리 생성
-    return dict(zip(krx['Name'], krx['Code']))
+
 
 df_main = load_db_data()
-name_to_code = get_krx_mapping()
+
+# KRX에 노크하지 않고, 내 DB에서 종목명과 코드를 직접 짝지어줍니다. (속도 향상 및 에러 원천 차단)
+try:
+    name_to_code = dict(zip(df_main['종목명'], df_main['종목코드']))
+except KeyError:
+    name_to_code = dict(zip(df_main['종목명'], df_main['Code']))
 
 if df_main.empty:
     st.error("❌ DB 데이터를 불러올 수 없습니다. 한미 통합 빌더를 먼저 실행하여 데이터를 적재해주세요.")
