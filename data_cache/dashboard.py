@@ -25,11 +25,16 @@ def load_db_data():
 
 df_main = load_db_data()
 
-# KRX에 노크하지 않고, 내 DB에서 종목명과 코드를 직접 짝지어줍니다. (속도 향상 및 에러 원천 차단)
-try:
-    name_to_code = dict(zip(df_main['종목명'], df_main['종목코드']))
-except KeyError:
-    name_to_code = dict(zip(df_main['종목명'], df_main['Code']))
+# DB 컬럼 이름을 자동 감지해서 짝지어주는 스마트 로직
+name_to_code = {}
+if not df_main.empty:
+    cols = df_main.columns.tolist()
+    # '종목명'이나 'Name'을 자동으로 찾음
+    name_col = '종목명' if '종목명' in cols else ('Name' if 'Name' in cols else cols[0])
+    # '종목코드'나 'Code'를 자동으로 찾음
+    code_col = '종목코드' if '종목코드' in cols else ('Code' if 'Code' in cols else cols[1])
+    
+    name_to_code = dict(zip(df_main[name_col], df_main[code_col]))
 
 if df_main.empty:
     st.error("❌ DB 데이터를 불러올 수 없습니다. 한미 통합 빌더를 먼저 실행하여 데이터를 적재해주세요.")
