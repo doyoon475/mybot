@@ -1,0 +1,105 @@
+PS C:\Users\wndnj\AppData\Local\Programs\Microsoft VS Code> & C:\Users\wndnj\AppData\Local\Programs\Python\Python312\python.exe c:/mybot/us_quant_master.py
+
+🌐 S&P 500 및 나스닥 100 종목 리스트 수집 중...
+
+Traceback (most recent call last):
+
+  File "c:\mybot\us_quant_master.py", line 19, in <module>
+
+    sp_table = pd.read_html(sp_url, flavor='bs4')[0]
+
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "C:\Users\wndnj\AppData\Local\Programs\Python\Python312\Lib\site-packages\pandas\io\html.py", line 1226, in read_html
+
+    return _parse(
+
+           ^^^^^^^
+
+  File "C:\Users\wndnj\AppData\Local\Programs\Python\Python312\Lib\site-packages\pandas\io\html.py", line 979, in _parse
+
+    tables = p.parse_tables()
+
+             ^^^^^^^^^^^^^^^^
+
+  File "C:\Users\wndnj\AppData\Local\Programs\Python\Python312\Lib\site-packages\pandas\io\html.py", line 237, in parse_tables
+
+    tables = self._parse_tables(self._build_doc(), self.match, self.attrs)
+
+                                ^^^^^^^^^^^^^^^^^
+
+  File "C:\Users\wndnj\AppData\Local\Programs\Python\Python312\Lib\site-packages\pandas\io\html.py", line 659, in _build_doc
+
+    bdoc = self._setup_build_doc()
+
+           ^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "C:\Users\wndnj\AppData\Local\Programs\Python\Python312\Lib\site-packages\pandas\io\html.py", line 651, in _setup_build_doc
+
+    raw_text = _read(self.io, self.encoding, self.storage_options)
+
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "C:\Users\wndnj\AppData\Local\Programs\Python\Python312\Lib\site-packages\pandas\io\html.py", line 134, in _read
+
+    with get_handle(
+
+         ^^^^^^^^^^^
+
+  File "C:\Users\wndnj\AppData\Local\Programs\Python\Python312\Lib\site-packages\pandas\io\common.py", line 776, in get_handle
+
+    ioargs = _get_filepath_or_buffer(
+
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "C:\Users\wndnj\AppData\Local\Programs\Python\Python312\Lib\site-packages\pandas\io\common.py", line 405, in _get_filepath_or_buffer
+
+    with urlopen(req_info) as req:
+
+         ^^^^^^^^^^^^^^^^^
+
+  File "C:\Users\wndnj\AppData\Local\Programs\Python\Python312\Lib\site-packages\pandas\io\common.py", line 282, in urlopen
+
+    return urllib.request.urlopen(*args, **kwargs)  # noqa: TID251
+
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "C:\Users\wndnj\AppData\Local\Programs\Python\Python312\Lib\urllib\request.py", line 215, in urlopen
+
+    return opener.open(url, data, timeout)
+
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "C:\Users\wndnj\AppData\Local\Programs\Python\Python312\Lib\urllib\request.py", line 521, in open
+
+    response = meth(req, response)
+
+               ^^^^^^^^^^^^^^^^^^^
+
+  File "C:\Users\wndnj\AppData\Local\Programs\Python\Python312\Lib\urllib\request.py", line 630, in http_response
+
+    response = self.parent.error(
+
+               ^^^^^^^^^^^^^^^^^^
+
+  File "C:\Users\wndnj\AppData\Local\Programs\Python\Python312\Lib\urllib\request.py", line 559, in error
+
+    return self._call_chain(*args)
+
+           ^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "C:\Users\wndnj\AppData\Local\Programs\Python\Python312\Lib\urllib\request.py", line 492, in _call_chain
+
+    result = func(*args)
+
+             ^^^^^^^^^^^
+
+  File "C:\Users\wndnj\AppData\Local\Programs\Python\Python312\Lib\urllib\request.py", line 639, in http_error_default
+
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+
+urllib.error.HTTPError: HTTP Error 403: Forbidden
+
+PS C:\Users\wndnj\AppData\Local\Programs\Microsoft VS Code> 
+us quant bot에서는 이렇게 뜨고
+
