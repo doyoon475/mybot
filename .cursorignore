@@ -1,0 +1,7 @@
+# 데이터베이스 및 대용량 캐시 파일 AI 인덱싱 제외
+data_cache/
+*.db
+*.sqlite3
+*.csv
+*.xlsx
+__pycache__/
