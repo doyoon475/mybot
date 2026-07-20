@@ -1,9 +1,16 @@
 import streamlit as st
+import os
 import sqlite3
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime
+from dotenv import load_dotenv
+
+# 환경변수 로드
+load_dotenv()
+TURSO_DB_URL = os.getenv("TURSO_DATABASE_URL")
+TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
 
 # ==========================================
 # 1. 초기 UI 및 Session State(메모리) 설정
@@ -74,6 +81,16 @@ df_main = df_all[df_all['date'] == latest_date].copy()
 # ==========================================
 # 3. 🎛️ 좌측 사이드바: 팩터 설계소
 # ==========================================
+try:
+    db_mtime = os.path.getmtime('data_cache/quant_history.db')
+    db_date = datetime.fromtimestamp(db_mtime).strftime('%Y-%m-%d')
+except FileNotFoundError:
+    db_date = "알 수 없음"
+
+st.sidebar.caption(
+    f"✅ DB 최종 갱신일: {db_date} (상세 보기 Hover)", 
+    help="매월 1일 GitHub Actions를 통해 최신 공시 및 주가 데이터가 자동 동기화됩니다."
+)
 st.sidebar.markdown("### 🎛️ 나만의 팩터 설계소")
 
 if st.sidebar.button("🤖 AI 매크로 비중 자동 할당", type="primary", use_container_width=True):
@@ -87,9 +104,9 @@ if st.sidebar.button("🤖 AI 매크로 비중 자동 할당", type="primary", u
         reset_ui_state()
         st.rerun()
 
-w_value = st.sidebar.slider("가치 (Value)", 0, 100, st.session_state.w_val, key='w_val', on_change=reset_ui_state)
-w_quality = st.sidebar.slider("우량 (Quality)", 0, 100, st.session_state.w_qual, key='w_qual', on_change=reset_ui_state)
-w_momentum = st.sidebar.slider("모멘텀 (Momentum)", 0, 100, st.session_state.w_mom, key='w_mom', on_change=reset_ui_state)
+w_value = st.sidebar.slider("가치 (Value)", 0, 100, key='w_val', on_change=reset_ui_state)
+w_quality = st.sidebar.slider("우량 (Quality)", 0, 100, key='w_qual', on_change=reset_ui_state)
+w_momentum = st.sidebar.slider("모멘텀 (Momentum)", 0, 100, key='w_mom', on_change=reset_ui_state)
 
 if st.session_state.ai_reason:
     st.sidebar.markdown("💡 **AI 팩터 분석 완료 (상세 보기 Hover)**", help=st.session_state.ai_reason)
@@ -179,7 +196,7 @@ if st.session_state.step1_unlocked:
     
     st.divider()
     st.markdown("### 📈 Step 2: 실전 다이내믹 시계열 백테스터")
-    st.info("💡 **알림**: 과거 팩터 데이터가 1개월 치만 존재하여, **현재 도출된 상위 종목들을 과거 10년 전부터 매월 적립식으로 투자했을 때**의 성과(정적 포트폴리오)를 시뮬레이션합니다.")
+    st.info("💡 **알림**: 2019년부터 축적된 **과거 실제 재무(팩터) 데이터**를 바탕으로, 매월(또는 지정 주기별) 랭킹을 다시 계산하여 종목을 교체하는 **진정한 다이내믹 롤링 백테스트**를 수행합니다.")
     st.caption("✔️ 투자 룰: 1~10위 매수 / 11~20위 유지 (최대 비중 15% 캡) / 21위 밖 전량 매도")
     st.caption("💸 수수료 및 슬리피지: 매수 시 0.15%, 매도 시 0.30% (세금 포함) 적용")
     
@@ -251,10 +268,17 @@ if st.session_state.step1_unlocked:
                     stock_value = sum(portfolio[t] * current_prices.get(t, 0) for t in portfolio.keys())
                     total_asset = cash + stock_value
                     
-                    # 과거 팩터가 없으면 가장 최신 팩터(현재 기준)의 랭킹을 고정으로 사용
-                    monthly_data = df_history[df_history['date'] == date]
+                    # 🚨 [진정한 다이내믹 퀀트 적용] 과거 팩터 기반 롤링(Rolling) 리밸런싱
+                    # 미래 참조(Look-ahead bias)를 방지하기 위해, 현재 시점(date)과 같거나 과거인 데이터 중 가장 최신 데이터를 사용
+                    past_data = df_history[df_history['date'] <= date]
+                    if not past_data.empty:
+                        latest_past_date = past_data['date'].max()
+                        monthly_data = df_history[df_history['date'] == latest_past_date]
+                    else:
+                        monthly_data = pd.DataFrame()
+                        
                     if monthly_data.empty:
-                        monthly_data = df_history[df_history['date'] == df_history['date'].max()]
+                        continue # 과거 데이터가 아예 없는 시점은 포트폴리오 유지(패스)
                     top_10 = monthly_data[monthly_data['Rank'] <= 10]['ticker'].tolist()
                     mid_10 = monthly_data[(monthly_data['Rank'] > 10) & (monthly_data['Rank'] <= 20)]['ticker'].tolist()
                     

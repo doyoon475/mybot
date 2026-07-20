@@ -5,6 +5,11 @@ import time
 import sqlite3
 import pandas as pd
 import re
+import sys
+
+# stdout 인코딩 설정
+if sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
 
 # ==========================================
 # 엄격한 회계 및 조세 실무 기준 COLUMN MAPPING 룰
@@ -67,10 +72,13 @@ def process_raw_data():
         return
 
     # 대용량 시계열 데이터를 꽂아넣기 위한 초고속 SQLite 세팅
-    conn = sqlite3.connect(db_path)
+    # database is locked 에러 방지를 위해 timeout을 넉넉히 주고, 
+    # 독립적인 연결을 사용하도록 격리합니다.
+    conn = sqlite3.connect(db_path, timeout=300.0)
     cursor = conn.cursor()
-    cursor.execute("PRAGMA synchronous = OFF")
-    cursor.execute("PRAGMA journal_mode = MEMORY")
+    cursor.execute("PRAGMA synchronous = NORMAL")
+    cursor.execute("PRAGMA journal_mode = WAL")  # MEMORY 대신 WAL 모드로 변경하여 동시성 개선
+    cursor.execute("PRAGMA busy_timeout = 300000")
     
     total_rows_inserted = 0
 
@@ -98,25 +106,47 @@ def process_raw_data():
             print(f"  ❌ 파일 읽기 에러: {e}")
             continue
 
-        # Column Mapping (엄격한 기준 적용)
+        # Column Mapping (엄격한 기준 및 구버전 긴 컬럼명 지원)
         mapped_columns = {}
         for col in df.columns:
-            mapped = False
-            for target_key, alias_list in COLUMN_MAPPING.items():
-                if isinstance(alias_list, list):
-                    if col in alias_list:
-                        mapped_columns[col] = target_key
-                        mapped = True
-                        break
-                else:
-                    if col == target_key or col == alias_list:
-                        mapped_columns[col] = alias_list
-                        mapped = True
-                        break
-            if not mapped:
+            col_str = str(col).strip()
+            if col_str == '코드' or '기업코드' in col_str:
+                mapped_columns[col] = 'ticker'
+            elif col_str == '회사명' or '회사이름' in col_str or '회사명  (더블클릭시 요약정보)' in col_str:
+                mapped_columns[col] = 'name'
+            elif col_str == 'PER' or col_str.startswith('PER='):
+                mapped_columns[col] = 'per'
+            elif col_str == 'PBR' or col_str.startswith('PBR='):
+                mapped_columns[col] = 'pbr'
+            elif col_str == 'PSR' or col_str.startswith('PSR='):
+                mapped_columns[col] = 'psr'
+            elif col_str == 'EV /EBITDA' or col_str.startswith('EV/EBITDA='):
+                mapped_columns[col] = 'ev_ebitda'
+            elif col_str == 'ROE (%)' or col_str.startswith('ROE='):
+                mapped_columns[col] = 'roe'
+            elif col_str == 'OPM (%)' or col_str.startswith('OPM='):
+                mapped_columns[col] = 'op_margin'
+            elif col_str == 'GPM (%)' or col_str.startswith('GPM='):
+                mapped_columns[col] = 'gross_margin'
+            elif col_str == '부채 비율 (%)' or col_str.startswith('부채비율='):
+                mapped_columns[col] = 'debt_ratio'
+            elif col_str == 'F스코어 점수 (9점만점)' or '포인트점수키' in col_str or 'F-Score' in col_str:
+                mapped_columns[col] = 'f_score'
+            elif col_str == '1개월 등락률 (%)' or '1개월전 수정주가' in col_str:
+                mapped_columns[col] = 'mom_1m'
+            elif col_str == '6개월 등락률 (%)' or '6개월전 수정주가' in col_str:
+                mapped_columns[col] = 'mom_6m'
+            elif col_str == '1년 등락률 (%)' or '1년전 수정주가' in col_str:
+                mapped_columns[col] = 'mom_12m'
+            else:
                 mapped_columns[col] = col
                 
         df.rename(columns=mapped_columns, inplace=True)
+        
+        # 🚨 [시니어 최적화] "PerformanceWarning: DataFrame is highly fragmented" 경고 해결
+        # Pandas가 열(Column)을 여러 번 수정/추가하다가 내부 메모리 구조가 파편화되는 현상 방지
+        # 한 번 복사(copy)를 떠서 메모리를 연속적으로 깔끔하게 재배치해 줌
+        df = df.copy()
         
         # Ticker 및 Date 포맷팅
         if 'ticker' in df.columns:
@@ -128,12 +158,17 @@ def process_raw_data():
         
         # DB 삽입용 필수 컬럼 방어 코드 (없으면 0.0 처리)
         insert_cols = ['date', 'ticker', 'per', 'pbr', 'psr', 'ev_ebitda', 'roe', 'op_margin', 'gross_margin', 'debt_ratio', 'f_score', 'mom_1m', 'mom_6m', 'mom_12m']
-        for col in insert_cols:
-            if col not in df.columns:
-                df[col] = 0.0
+        missing_cols = {col: 0.0 for col in insert_cols if col not in df.columns}
+        if missing_cols:
+            df = df.assign(**missing_cols)
                 
-        # NaN 처리 및 튜플 변환
-        df.fillna(0, inplace=True)
+        # NaN 처리 및 튜플 변환 (문자열 컬럼에 0이 들어가는 에러 방지)
+        for col in df.columns:
+            if df[col].dtype == 'object' or pd.api.types.is_string_dtype(df[col]):
+                df[col] = df[col].fillna("")
+            else:
+                df[col] = df[col].fillna(0.0)
+                
         insert_data = list(zip(
             df['date'], df['ticker'], df['per'], df['pbr'], df['psr'], df['ev_ebitda'], 
             df['roe'], df['op_margin'], df['gross_margin'], df['debt_ratio'], 
@@ -141,16 +176,39 @@ def process_raw_data():
         ))
         
         # 고속 병합 삽입
-        cursor.executemany('''
-            INSERT OR REPLACE INTO monthly_factor 
-            (date, ticker, per, pbr, psr, ev_ebitda, roe, op_margin, gross_margin, debt_ratio, f_score, mom_1m, mom_6m, mom_12m)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', insert_data)
+        retry_count = 0
+        while retry_count < 3:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                cursor.executemany('''
+                    INSERT OR REPLACE INTO monthly_factor 
+                    (date, ticker, per, pbr, psr, ev_ebitda, roe, op_margin, gross_margin, debt_ratio, f_score, mom_1m, mom_6m, mom_12m)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', insert_data)
+                conn.commit()  # 매 파일마다 커밋하여 lock 방지
+                break # 성공 시 루프 탈출
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e):
+                    retry_count += 1
+                    print(f"  ⚠️ DB Lock 발생. 재시도 중... ({retry_count}/3)")
+                    conn.rollback()
+                    time.sleep(5) # 대기 시간 대폭 증가
+                else:
+                    print(f"  ❌ DB Insert 에러: {e}")
+                    conn.rollback()
+                    break
+            except Exception as e:
+                print(f"  ❌ DB Insert 에러: {e}")
+                conn.rollback()
+                break
         
         total_rows_inserted += len(insert_data)
 
     # 확정 및 닫기
-    conn.commit()
+    try:
+        conn.commit()
+    except:
+        pass
     conn.close()
     
     print(f"\n✅ [성공] 총 {total_rows_inserted:,}행의 팩터 데이터 적재 완료!")

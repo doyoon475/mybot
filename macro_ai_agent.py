@@ -83,7 +83,7 @@ def get_monthly_factor_weights():
         
         # generation_config를 통해 결과물을 완벽한 JSON 형식으로 강제 파싱되도록 락(Lock)을 겁니다.
         model = genai.GenerativeModel(
-            model_name="gemini-3.1-pro-preview",
+            model_name="gemini-1.5-pro",
             system_instruction=system_instruction,
             generation_config={"response_mime_type": "application/json"} 
         )
@@ -116,7 +116,7 @@ def get_monthly_factor_weights():
         
     except Exception as e:
         print(f"Gemini API 또는 JSON 파싱 에러 발생: {e}")
-        return {"value": 34, "quality": 33, "momentum": 33, "reason": "AI 분석 실패 또는 JSON 파싱 에러로 인한 기본 비중 할당"}
+        return {"value": 34, "quality": 33, "momentum": 33, "reason": f"AI 분석 실패: {str(e)}"}
 
 # 단독 실행 테스트용
 if __name__ == "__main__":
