@@ -237,19 +237,33 @@ def load_db_data():
                 df_factor["factor_mom"] = np.nan
             print(f"[warn] factor_mom 산출 실패: {e}")
     
-    query_price = "SELECT date, ticker, close FROM daily_price"
+    query_price = "SELECT date, ticker, close, volume FROM daily_price"
     try:
         df_price = pd.read_sql(query_price, conn)
         if not df_price.empty:
             df_price['date'] = pd.to_datetime(df_price['date'])
             df_price['close'] = pd.to_numeric(df_price['close'], errors='coerce')
+            if "volume" in df_price.columns:
+                df_price["volume"] = pd.to_numeric(df_price["volume"], errors="coerce")
             # 유니버스에 있는 종목만 남겨 피벗 메모리/속도 최적화
             universe = set(df_factor['ticker'].unique())
             df_price = df_price[df_price['ticker'].isin(universe)].dropna(subset=['close'])
         else:
             df_price = pd.DataFrame()
     except Exception:
-        df_price = pd.DataFrame()
+        # volume 컬럼 없는 구 DB 호환
+        try:
+            df_price = pd.read_sql("SELECT date, ticker, close FROM daily_price", conn)
+            if not df_price.empty:
+                df_price["date"] = pd.to_datetime(df_price["date"])
+                df_price["close"] = pd.to_numeric(df_price["close"], errors="coerce")
+                df_price["volume"] = np.nan
+                universe = set(df_factor["ticker"].unique())
+                df_price = df_price[df_price["ticker"].isin(universe)].dropna(subset=["close"])
+            else:
+                df_price = pd.DataFrame()
+        except Exception:
+            df_price = pd.DataFrame()
 
     # Phase A1–A2: 저변동 + 섹터 상대 가치
     try:
@@ -385,9 +399,27 @@ with st.sidebar.expander("🔽 모멘텀(Momentum) 세부 비중", expanded=Fals
     f_earn_mom = w_earn_p
     f_factor_mom = w_factor_p
 
-# ==========================================
-# 4. 랭킹 연산 엔진
-# ==========================================
+# --- 제품 #1: 유동성(거래대금) 필터 ---
+st.sidebar.markdown("### 💧 유동성 필터")
+liq_filter_on = st.sidebar.checkbox(
+    "최소 거래대금 이상만 편입",
+    value=False,
+    key="liq_filter_on",
+    help="최근 20거래일 평균 거래대금(종가×거래량)이 기준 미만인 종목을 랭킹·백테스트에서 제외합니다.",
+    on_change=reset_ui_state,
+)
+min_tv_eok = st.sidebar.slider(
+    "최소 평균 거래대금 (억 원)",
+    min_value=1,
+    max_value=50,
+    value=5,
+    step=1,
+    key="min_tv_eok",
+    disabled=not liq_filter_on,
+    help="예: 5 = 일평균 약 5억 원 이상. 저유동성 종목의 급등락 위험을 줄입니다.",
+    on_change=reset_ui_state,
+)
+MIN_TV_WON = float(min_tv_eok) * 1e8
 def calculate_rank(df):
     """
     결측(NaN) 처리:
@@ -483,6 +515,29 @@ def save_portfolio_lock(df_locked: pd.DataFrame, factor_month: str, weights: dic
         json.dump(payload, f, ensure_ascii=False, indent=2)
     return payload
 
+
+# 유동성 필터 적용 (최신 팩터월 기준)
+_liq_n_before = len(df_main)
+if liq_filter_on:
+    try:
+        from liquidity_benchmark import liquid_tickers
+
+        asof_liq = None
+        if not df_price_all.empty:
+            asof_liq = df_price_all["date"].max()
+        ok = liquid_tickers(
+            df_price_all, MIN_TV_WON, asof=asof_liq, lookback=20
+        )
+        if ok:
+            df_main = df_main[df_main["ticker"].isin(ok)].copy()
+            st.sidebar.caption(
+                f"유동성 통과: **{len(df_main):,}** / {_liq_n_before:,} "
+                f"(≥{min_tv_eok}억, 20일 평균)"
+            )
+        else:
+            st.sidebar.warning("거래량 데이터 부족 — 유동성 필터를 적용하지 못했습니다.")
+    except Exception as e:
+        st.sidebar.warning(f"유동성 필터 실패: {e}")
 
 df_result = calculate_rank(df_main.copy())
 df_result.insert(0, '순위', df_result.index + 1)
@@ -776,7 +831,30 @@ if st.session_state.step1_unlocked:
                         past_data = df_history[df_history['date'] <= ym]
                         if not past_data.empty:
                             latest_past_date = past_data['date'].max()
-                            monthly_data = df_history[df_history['date'] == latest_past_date]
+                            monthly_data = df_history[df_history['date'] == latest_past_date].copy()
+                            # #1: 리밸런싱 시점 유동성 필터 후 재순위
+                            if liq_filter_on:
+                                try:
+                                    from liquidity_benchmark import liquid_tickers as _liq_tk
+
+                                    ok_m = _liq_tk(
+                                        df_price_all,
+                                        MIN_TV_WON,
+                                        asof=pd.Timestamp(date),
+                                        lookback=20,
+                                    )
+                                    if ok_m:
+                                        monthly_data = monthly_data[
+                                            monthly_data["ticker"].isin(ok_m)
+                                        ].copy()
+                                        monthly_data = monthly_data.sort_values(
+                                            "종합점수", ascending=False
+                                        )
+                                        monthly_data["Rank"] = np.arange(
+                                            1, len(monthly_data) + 1
+                                        )
+                                except Exception:
+                                    pass
                             top_10 = monthly_data[monthly_data['Rank'] <= 10]['ticker'].tolist()
                             mid_10 = monthly_data[(monthly_data['Rank'] > 10) & (monthly_data['Rank'] <= 20)]['ticker'].tolist()
                     
@@ -846,6 +924,8 @@ if st.session_state.step1_unlocked:
                     "🚨 주요 하락장/고변동성 구간 차트에 음영 표시 (MDD -10% 기준)",
                     help="낙폭 -10% 이하 구간만 붉은 음영으로 표시합니다. (라벨 중복 없이 가시성 우선)"
                 )
+                bc_kospi = st.checkbox("코스피 지수 오버레이 (시작=100)", value=True, key="bt_kospi")
+                bc_kosdaq = st.checkbox("코스닥 지수 오버레이 (시작=100)", value=True, key="bt_kosdaq")
                 
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(
@@ -862,6 +942,42 @@ if st.session_state.step1_unlocked:
                     name='나의 퀀트 랩 자산',
                     line=dict(color='#00CC96', width=2.5)
                 ))
+
+                # #11: 코스피/코스닥 보조축 (시작일=100 으로 지수화)
+                if bc_kospi or bc_kosdaq:
+                    try:
+                        from liquidity_benchmark import load_kr_benchmarks
+
+                        @st.cache_data(ttl=86400, show_spinner=False)
+                        def _bench(start: str, end: str):
+                            return load_kr_benchmarks(start, end)
+
+                        bdf = _bench(
+                            df_asset.index.min().strftime("%Y-%m-%d"),
+                            df_asset.index.max().strftime("%Y-%m-%d"),
+                        )
+                        if not bdf.empty:
+                            bdf = bdf.reindex(df_asset.index).ffill()
+                            colors = {"코스피": "#636EFA", "코스닥": "#EF553B"}
+                            for col, on in (("코스피", bc_kospi), ("코스닥", bc_kosdaq)):
+                                if not on or col not in bdf.columns:
+                                    continue
+                                s = pd.to_numeric(bdf[col], errors="coerce").dropna()
+                                if s.empty:
+                                    continue
+                                rebased = bdf[col] / float(s.iloc[0]) * 100.0
+                                fig.add_trace(
+                                    go.Scatter(
+                                        x=df_asset.index,
+                                        y=rebased,
+                                        mode="lines",
+                                        name=f"{col} (시작=100)",
+                                        line=dict(color=colors.get(col, "#AB63FA"), width=1.5, dash="dot"),
+                                        yaxis="y2",
+                                    )
+                                )
+                    except Exception as e:
+                        st.caption(f"⚠️ 벤치마크 지수 로드 실패: {e}")
                 
                 if show_volatility:
                     is_dd = df_asset['Drawdown'] <= -10.0
@@ -890,7 +1006,7 @@ if st.session_state.step1_unlocked:
                 
                 fig.update_layout(
                     height=420,
-                    margin=dict(l=60, r=20, t=30, b=20),
+                    margin=dict(l=60, r=55, t=30, b=20),
                     hovermode="x unified",
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
                     yaxis=dict(
@@ -900,11 +1016,24 @@ if st.session_state.step1_unlocked:
                         exponentformat="none",
                         showexponent="none",
                     ),
+                    yaxis2=dict(
+                        title="지수 (시작=100)",
+                        overlaying="y",
+                        side="right",
+                        showgrid=False,
+                    ),
                 )
-                # hover에도 원 단위 콤마 표기
-                fig.update_traces(hovertemplate="%{y:,.0f} 원<extra>%{fullData.name}</extra>")
+                # hover: 자산은 원, 지수는 그대로
+                for tr in fig.data:
+                    if tr.name and "시작=100" in str(tr.name):
+                        tr.hovertemplate = "%{y:.1f}<extra>%{fullData.name}</extra>"
+                    else:
+                        tr.hovertemplate = "%{y:,.0f} 원<extra>%{fullData.name}</extra>"
                 st.plotly_chart(fig, width="stretch")
-                st.caption("✔️ 곡선은 **매일 종가 평가**, 종목 교체는 **매월 첫 거래일**에 수행됩니다. (세로축: 원)")
+                st.caption(
+                    "✔️ 곡선은 **매일 종가 평가**, 종목 교체는 **매월 첫 거래일**. "
+                    "코스피/코스닥은 **보조축·시작일=100** 지수화(절대 레벨 비교용 아님)."
+                )
                 
                 rc1, rc2, rc3 = st.columns(3)
                 rc1.metric("최종 자산 (만원)", f"{final_val/10000:,.0f}")
