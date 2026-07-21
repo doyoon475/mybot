@@ -320,8 +320,19 @@ if st.sidebar.button("🤖 AI 매크로 비중 자동 할당", type="primary", u
         importlib.reload(macro_ai_agent)
         ai_weights = macro_ai_agent.get_monthly_factor_weights(force_refresh=True)
         apply_ai_weights_to_session(ai_weights)
+        st.session_state.pending_monthly_report = True
+        st.session_state._report_weights = ai_weights
         reset_ui_state()
         st.rerun()
+
+if st.sidebar.button("📄 이달의 AI 보고서 다시 보기", use_container_width=True):
+    from monthly_report import load_saved_report
+    saved = load_saved_report()
+    if saved:
+        st.session_state.monthly_report_md = saved
+        st.session_state.show_monthly_report = True
+    else:
+        st.sidebar.warning("저장된 보고서가 없습니다. 먼저 AI 매크로를 실행하세요.")
 
 w_value = st.sidebar.slider(
     "가치 (Value)", 0, 100, key='w_val', on_change=reset_ui_state,
@@ -620,6 +631,103 @@ if liq_filter_on:
 df_result = calculate_rank(df_main.copy())
 df_result.insert(0, '순위', df_result.index + 1)
 df_result = assign_trade_actions(df_result)
+
+# 제품 #6: AI 매크로 직후 월간 보고서 생성
+if st.session_state.get("pending_monthly_report"):
+    with st.spinner("이달의 AI 보고서 작성 중... (시황 요약 추가 호출)"):
+        try:
+            from monthly_report import generate_and_save_report
+
+            wrep = st.session_state.get("_report_weights") or {
+                "value": st.session_state.get("w_val", 34),
+                "quality": st.session_state.get("w_qual", 33),
+                "momentum": st.session_state.get("w_mom", 33),
+                "reason": st.session_state.get("ai_reason", ""),
+                "sub_value": {},
+                "sub_quality": {},
+                "sub_momentum": {},
+                "source": "session",
+            }
+            # 세션 세부 슬라이더로 sub_* 보강
+            wrep = dict(wrep)
+            wrep["sub_value"] = {
+                "per": st.session_state.get("sub_per", 25),
+                "pbr": st.session_state.get("sub_pbr", 25),
+                "psr": st.session_state.get("sub_psr", 15),
+                "ev": st.session_state.get("sub_ev", 15),
+                "per_sec": st.session_state.get("sub_per_sec", 10),
+                "pbr_sec": st.session_state.get("sub_pbr_sec", 10),
+            }
+            wrep["sub_quality"] = {
+                "roe": st.session_state.get("sub_roe", 12),
+                "opm": st.session_state.get("sub_opm", 7),
+                "gpm": st.session_state.get("sub_gpm", 7),
+                "fscore": st.session_state.get("sub_fscore", 7),
+                "vol": st.session_state.get("sub_vol", 10),
+                "accrual": st.session_state.get("sub_accrual", 9),
+                "fcf": st.session_state.get("sub_fcf", 9),
+                "growth": st.session_state.get("sub_growth", 10),
+                "div": st.session_state.get("sub_div", 9),
+                "share": st.session_state.get("sub_share", 8),
+                "treasury": st.session_state.get("sub_treasury", 12),
+            }
+            wrep["sub_momentum"] = {
+                "price": st.session_state.get("sub_price_mom", 40),
+                "earn": st.session_state.get("sub_earn_mom", 35),
+                "factor": st.session_state.get("sub_factor_mom", 25),
+                "mom1": st.session_state.get("sub_mom1", 20),
+                "mom6": st.session_state.get("sub_mom6", 40),
+                "mom12": st.session_state.get("sub_mom12", 40),
+            }
+            liq_note = (
+                f"일평균 거래대금 ≥ {min_tv_eok}억 적용 중"
+                if liq_filter_on
+                else "유동성 필터 꺼짐"
+            )
+            cols_rep = [
+                c
+                for c in (
+                    "순위", "종목명", "섹터", "가치점수", "우량점수", "모멘텀점수", "종합점수", "ticker"
+                )
+                if c in df_result.columns
+            ]
+            top_rows = df_result.head(10)[cols_rep].to_dict(orient="records")
+            md = generate_and_save_report(
+                wrep, top_rows, str(latest_date), db_date, liq_note=liq_note
+            )
+            st.session_state.monthly_report_md = md
+            st.session_state.show_monthly_report = True
+        except Exception as e:
+            st.warning(f"월간 보고서 생성 실패: {e}")
+        finally:
+            st.session_state.pending_monthly_report = False
+
+
+def _show_monthly_report_dialog():
+    md = st.session_state.get("monthly_report_md") or ""
+    st.markdown(md)
+    st.download_button(
+        "⬇️ 마크다운 다운로드",
+        data=md.encode("utf-8"),
+        file_name=f"quant_lab_report_{latest_date}.md",
+        mime="text/markdown",
+        use_container_width=True,
+    )
+    if st.button("닫기", use_container_width=True):
+        st.session_state.show_monthly_report = False
+        st.rerun()
+
+
+if st.session_state.get("show_monthly_report") and st.session_state.get("monthly_report_md"):
+    try:
+        @st.dialog("📄 이달의 퀀트 랩 리포트", width="large")
+        def _monthly_report_dialog():
+            _show_monthly_report_dialog()
+
+        _monthly_report_dialog()
+    except Exception:
+        with st.expander("📄 이달의 퀀트 랩 리포트", expanded=True):
+            _show_monthly_report_dialog()
 
 # ==========================================
 # 5. 점진적 공개(Progressive Disclosure) UI
