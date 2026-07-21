@@ -323,9 +323,18 @@ if st.sidebar.button("🤖 AI 매크로 비중 자동 할당", type="primary", u
         reset_ui_state()
         st.rerun()
 
-w_value = st.sidebar.slider("가치 (Value)", 0, 100, key='w_val', on_change=reset_ui_state)
-w_quality = st.sidebar.slider("우량 (Quality)", 0, 100, key='w_qual', on_change=reset_ui_state)
-w_momentum = st.sidebar.slider("모멘텀 (Momentum)", 0, 100, key='w_mom', on_change=reset_ui_state)
+w_value = st.sidebar.slider(
+    "가치 (Value)", 0, 100, key='w_val', on_change=reset_ui_state,
+    help="싸게 평가된 종목 비중. 높일수록 PER·PBR 등 저평가 신호가 강한 종목을 우대합니다.",
+)
+w_quality = st.sidebar.slider(
+    "우량 (Quality)", 0, 100, key='w_qual', on_change=reset_ui_state,
+    help="재무 품질·수익성 비중. 높일수록 ROE·마진·현금흐름·저변동 등 우량 신호가 강한 종목을 우대합니다.",
+)
+w_momentum = st.sidebar.slider(
+    "모멘텀 (Momentum)", 0, 100, key='w_mom', on_change=reset_ui_state,
+    help="추세·실적 모멘텀 비중. 높일수록 최근 주가·이익이 잘 오른 종목을 우대합니다.",
+)
 
 if st.session_state.ai_reason:
     st.sidebar.success("💡 AI 매크로 비중 근거 (Perplexity)")
@@ -338,12 +347,30 @@ else:
     real_w_val = real_w_qual = real_w_mom = 0
 
 with st.sidebar.expander("🔽 가치(Value) 세부 비중", expanded=False):
-    sub_per = st.slider("PER (순이익)", 0, 100, key="sub_per", on_change=reset_ui_state)
-    sub_pbr = st.slider("PBR (순자산)", 0, 100, key="sub_pbr", on_change=reset_ui_state)
-    sub_psr = st.slider("PSR (매출액)", 0, 100, key="sub_psr", on_change=reset_ui_state)
-    sub_ev = st.slider("EV/EBITDA", 0, 100, key="sub_ev", on_change=reset_ui_state)
-    sub_per_sec = st.slider("PER 섹터상대 (z)", 0, 100, key="sub_per_sec", on_change=reset_ui_state)
-    sub_pbr_sec = st.slider("PBR 섹터상대 (z)", 0, 100, key="sub_pbr_sec", on_change=reset_ui_state)
+    sub_per = st.slider(
+        "PER (순이익)", 0, 100, key="sub_per", on_change=reset_ui_state,
+        help="주가/순이익. 낮을수록 이익 대비 저평가. 슬라이더↑ = 저PER 종목 더 우대.",
+    )
+    sub_pbr = st.slider(
+        "PBR (순자산)", 0, 100, key="sub_pbr", on_change=reset_ui_state,
+        help="주가/순자산. 낮을수록 자산 대비 저평가. 슬라이더↑ = 저PBR 우대.",
+    )
+    sub_psr = st.slider(
+        "PSR (매출액)", 0, 100, key="sub_psr", on_change=reset_ui_state,
+        help="주가/매출. 낮을수록 매출 대비 저평가. 슬라이더↑ = 저PSR 우대.",
+    )
+    sub_ev = st.slider(
+        "EV/EBITDA", 0, 100, key="sub_ev", on_change=reset_ui_state,
+        help="기업가치/영업현금창출력. 낮을수록 저평가. 슬라이더↑ = 낮은 EV/EBITDA 우대.",
+    )
+    sub_per_sec = st.slider(
+        "PER 섹터상대 (z)", 0, 100, key="sub_per_sec", on_change=reset_ui_state,
+        help="같은 섹터 대비 PER z-score. 낮을수록 업종 내 상대 저평가. 슬라이더↑ = 섹터 대비 싼 종목 우대.",
+    )
+    sub_pbr_sec = st.slider(
+        "PBR 섹터상대 (z)", 0, 100, key="sub_pbr_sec", on_change=reset_ui_state,
+        help="같은 섹터 대비 PBR z-score. 낮을수록 업종 내 상대 저평가. 슬라이더↑ = 섹터 대비 싼 종목 우대.",
+    )
     
     tot_val_sub = sub_per + sub_pbr + sub_psr + sub_ev + sub_per_sec + sub_pbr_sec
     f_per, f_pbr, f_psr, f_ev, f_per_sec, f_pbr_sec = [
@@ -352,17 +379,50 @@ with st.sidebar.expander("🔽 가치(Value) 세부 비중", expanded=False):
     ]
 
 with st.sidebar.expander("🔽 우량(Quality) 세부 비중", expanded=False):
-    sub_roe = st.slider("ROE (자본수익률)", 0, 100, key="sub_roe", on_change=reset_ui_state)
-    sub_opm = st.slider("OPM (영업이익률)", 0, 100, key="sub_opm", on_change=reset_ui_state)
-    sub_gpm = st.slider("GPM (매출총이익률)", 0, 100, key="sub_gpm", on_change=reset_ui_state)
-    sub_fscore = st.slider("F-Score (재무건전성)", 0, 100, key="sub_fscore", on_change=reset_ui_state)
-    sub_vol = st.slider("저변동 vol_12m (낮을수록↑)", 0, 100, key="sub_vol", on_change=reset_ui_state)
-    sub_accrual = st.slider("Accrual (NI-CFO)/Assets 낮을수록↑", 0, 100, key="sub_accrual", on_change=reset_ui_state)
-    sub_fcf = st.slider("FCF Yield (높을수록↑)", 0, 100, key="sub_fcf", on_change=reset_ui_state)
-    sub_growth = st.slider("다년성장 growth_stab (높을수록↑)", 0, 100, key="sub_growth", on_change=reset_ui_state)
-    sub_div = st.slider("배당수익률 div_yield (높을수록↑)", 0, 100, key="sub_div", on_change=reset_ui_state)
-    sub_share = st.slider("주식수증가 share_growth (낮을수록↑)", 0, 100, key="sub_share", on_change=reset_ui_state)
-    sub_treasury = st.slider("자사주비중증가 treasury_chg (높을수록↑)", 0, 100, key="sub_treasury", on_change=reset_ui_state)
+    sub_roe = st.slider(
+        "ROE (자본수익률)", 0, 100, key="sub_roe", on_change=reset_ui_state,
+        help="순이익/자기자본. 높을수록 자본 효율↑. 슬라이더↑ = 고ROE 우대.",
+    )
+    sub_opm = st.slider(
+        "OPM (영업이익률)", 0, 100, key="sub_opm", on_change=reset_ui_state,
+        help="영업이익/매출. 높을수록 본업 수익성↑. 슬라이더↑ = 고마진 우대.",
+    )
+    sub_gpm = st.slider(
+        "GPM (매출총이익률)", 0, 100, key="sub_gpm", on_change=reset_ui_state,
+        help="매출총이익/매출. 높을수록 제품·원가 우위. 슬라이더↑ = 고GPM 우대.",
+    )
+    sub_fscore = st.slider(
+        "F-Score (재무건전성)", 0, 100, key="sub_fscore", on_change=reset_ui_state,
+        help="Piotroski식 0~9 정수(신호 합). 높을수록 재무 개선·건전. 슬라이더↑ = 고F-Score 우대.",
+    )
+    sub_vol = st.slider(
+        "저변동 vol_12m (낮을수록↑)", 0, 100, key="sub_vol", on_change=reset_ui_state,
+        help="12개월 연율 변동성. 낮을수록 주가 흔들림↓(방어). 슬라이더↑ = 저변동 종목 우대.",
+    )
+    sub_accrual = st.slider(
+        "Accrual (NI-CFO)/Assets 낮을수록↑", 0, 100, key="sub_accrual", on_change=reset_ui_state,
+        help="발생액 비중. 낮을수록 이익이 현금과 잘 맞음(품질↑). 슬라이더↑ = 저Accrual 우대.",
+    )
+    sub_fcf = st.slider(
+        "FCF Yield (높을수록↑)", 0, 100, key="sub_fcf", on_change=reset_ui_state,
+        help="잉여현금흐름/시총. 높을수록 현금창출력 대비 저평가. 슬라이더↑ = 고FCF Yield 우대.",
+    )
+    sub_growth = st.slider(
+        "다년성장 growth_stab (높을수록↑)", 0, 100, key="sub_growth", on_change=reset_ui_state,
+        help="3년 매출·영업·순이익 성장의 안정 점수. 높을수록 꾸준한 성장. 슬라이더↑ = 고성장안정 우대.",
+    )
+    sub_div = st.slider(
+        "배당수익률 div_yield (높을수록↑)", 0, 100, key="sub_div", on_change=reset_ui_state,
+        help="연간배당/주가. 높을수록 배당 매력↑. 슬라이더↑ = 고배당 우대.",
+    )
+    sub_share = st.slider(
+        "주식수증가 share_growth (낮을수록↑)", 0, 100, key="sub_share", on_change=reset_ui_state,
+        help="주식수 증가율(희석). 낮을수록(음수=자사주·감자) 주주 유리. 슬라이더↑ = 저희석 우대.",
+    )
+    sub_treasury = st.slider(
+        "자사주비중증가 treasury_chg (높을수록↑)", 0, 100, key="sub_treasury", on_change=reset_ui_state,
+        help="자사주 비중 YoY 증가. 높을수록 자사주 매입·소각 성향. 슬라이더↑ = 자사주 증가 우대.",
+    )
     
     tot_qual_sub = (
         sub_roe + sub_opm + sub_gpm + sub_fscore + sub_vol
@@ -378,9 +438,18 @@ with st.sidebar.expander("🔽 우량(Quality) 세부 비중", expanded=False):
 
 with st.sidebar.expander("🔽 모멘텀(Momentum) 세부 비중", expanded=False):
     st.caption("3축: 가격 · 이익 · 팩터 모멘텀")
-    sub_price_mom = st.slider("가격 모멘텀 (Price)", 0, 100, key="sub_price_mom", on_change=reset_ui_state)
-    sub_earn_mom = st.slider("이익 모멘텀 (Earnings)", 0, 100, key="sub_earn_mom", on_change=reset_ui_state)
-    sub_factor_mom = st.slider("팩터 모멘텀 (Factor)", 0, 100, key="sub_factor_mom", on_change=reset_ui_state)
+    sub_price_mom = st.slider(
+        "가격 모멘텀 (Price)", 0, 100, key="sub_price_mom", on_change=reset_ui_state,
+        help="주가 추세 모멘텀 축 비중. 슬라이더↑ = 최근 상승 종목 더 우대.",
+    )
+    sub_earn_mom = st.slider(
+        "이익 모멘텀 (Earnings)", 0, 100, key="sub_earn_mom", on_change=reset_ui_state,
+        help="영업·순이익 YoY 등 실적 모멘텀. 높을수록 실적 개선. 슬라이더↑ = 고이익모멘텀 우대.",
+    )
+    sub_factor_mom = st.slider(
+        "팩터 모멘텀 (Factor)", 0, 100, key="sub_factor_mom", on_change=reset_ui_state,
+        help="최근 잘 먹힌 스타일(가치·우량·가격)에 대한 종목 노출. 슬라이더↑ = 팩터모멘텀 우대.",
+    )
     tot_mom_pillar = sub_price_mom + sub_earn_mom + sub_factor_mom
     w_price_p, w_earn_p, w_factor_p = [
         x / tot_mom_pillar * real_w_mom if tot_mom_pillar > 0 else 0
@@ -388,9 +457,18 @@ with st.sidebar.expander("🔽 모멘텀(Momentum) 세부 비중", expanded=Fals
     ]
 
     st.caption("가격 모멘텀 Horizon")
-    sub_mom1 = st.slider("1개월 등락률", 0, 100, key="sub_mom1", on_change=reset_ui_state)
-    sub_mom6 = st.slider("6개월 등락률", 0, 100, key="sub_mom6", on_change=reset_ui_state)
-    sub_mom12 = st.slider("12개월 등락률", 0, 100, key="sub_mom12", on_change=reset_ui_state)
+    sub_mom1 = st.slider(
+        "1개월 등락률", 0, 100, key="sub_mom1", on_change=reset_ui_state,
+        help="최근 1개월 주가 수익률. 높을수록 단기 강세. 슬라이더↑ = 단기 모멘텀 우대.",
+    )
+    sub_mom6 = st.slider(
+        "6개월 등락률", 0, 100, key="sub_mom6", on_change=reset_ui_state,
+        help="최근 6개월 주가 수익률. 중기 추세. 슬라이더↑ = 6개월 모멘텀 우대.",
+    )
+    sub_mom12 = st.slider(
+        "12개월 등락률", 0, 100, key="sub_mom12", on_change=reset_ui_state,
+        help="최근 12개월 주가 수익률. 장기 추세. 슬라이더↑ = 12개월 모멘텀 우대.",
+    )
     tot_mom_hz = sub_mom1 + sub_mom6 + sub_mom12
     f_mom1, f_mom6, f_mom12 = [
         x / tot_mom_hz * w_price_p if tot_mom_hz > 0 else 0
