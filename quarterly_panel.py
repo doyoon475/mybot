@@ -10,6 +10,7 @@ Phase C9: DART 분기 재무 패널 → Growth / Surprise 근사
 예:
   python quarterly_panel.py --import-annual-cache
   python quarterly_panel.py --fetch --years 2 --limit 30 --sleep 1.0
+  python quarterly_panel.py --fetch --min-year 2018 --sleep 0.8 --apply
   python quarterly_panel.py --apply
   python quarterly_panel.py --all --years 2 --sleep 1.0
 """
@@ -20,7 +21,7 @@ import glob
 import os
 import re
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -335,20 +336,35 @@ def fetch_panel(
     sleep_sec: float = 1.0,
     with_all: bool = False,
     reprts: Tuple[str, ...] = REPRT_ORDER,
+    skip_existing: bool = True,
 ) -> int:
     dart = _init_dart()
     conn = _connect()
     ensure_quarterly_table(conn)
     tickers = active_tickers(limit)
+    existing: Set[Tuple[str, int, str]] = set()
+    if skip_existing:
+        existing = {
+            (r[0], int(r[1]), r[2])
+            for r in conn.execute(
+                "SELECT ticker, bsns_year, reprt_code FROM quarterly_fund"
+            ).fetchall()
+        }
     print(
-        f"📡 DART 분기 fetch | tickers={len(tickers)} years={years} reprts={list(reprts)}",
+        f"📡 DART 분기 fetch | tickers={len(tickers)} years={years} "
+        f"reprts={list(reprts)} skip_existing={skip_existing} "
+        f"db_rows={len(existing)}",
         flush=True,
     )
     saved = 0
+    skipped = 0
     t0 = time.time()
     for i, ticker in enumerate(tickers, 1):
         for year in years:
             for reprt in reprts:
+                if skip_existing and (ticker, int(year), reprt) in existing:
+                    skipped += 1
+                    continue
                 try:
                     df = fetch_finstate_reprt(dart, ticker, year, reprt, sleep_sec)
                     if df.empty:
@@ -363,6 +379,7 @@ def fetch_panel(
                             fund = merge_fundamentals(fund, extract_fundamentals(df_all))
                             src = "dart_singl+all"
                     upsert_quarter_row(conn, ticker, year, reprt, fund, src)
+                    existing.add((ticker, int(year), reprt))
                     saved += 1
                 except Exception as e:
                     msg = str(e)
@@ -371,12 +388,15 @@ def fetch_panel(
         if i % 50 == 0:
             conn.commit()
             print(
-                f"  [{i}/{len(tickers)}] saved≈{saved} | {time.time()-t0:.0f}s",
+                f"  [{i}/{len(tickers)}] saved≈{saved} skip≈{skipped} | {time.time()-t0:.0f}s",
                 flush=True,
             )
     conn.commit()
     conn.close()
-    print(f"✅ fetch 완료 saved={saved} | {time.time()-t0:.1f}s", flush=True)
+    print(
+        f"✅ fetch 완료 saved={saved} skipped={skipped} | {time.time()-t0:.1f}s",
+        flush=True,
+    )
     return saved
 
 
@@ -513,11 +533,18 @@ def main():
     p.add_argument("--fetch", action="store_true")
     p.add_argument("--apply", action="store_true")
     p.add_argument("--all", action="store_true")
-    p.add_argument("--years", type=int, default=2, help="최근 N개 사업연도")
+    p.add_argument("--years", type=int, default=2, help="최근 N개 사업연도 (--min-year 없을 때)")
+    p.add_argument(
+        "--min-year",
+        type=int,
+        default=None,
+        help="시작 사업연도 (2019 YoY면 2018부터). 지정 시 --years 무시",
+    )
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--sleep", type=float, default=1.0)
     p.add_argument("--with-all", action="store_true", help="CF 포함 finstate_all")
     p.add_argument("--overwrite-earn-mom", action="store_true")
+    p.add_argument("--no-skip-existing", action="store_true")
     p.add_argument(
         "--reprts",
         default="11013,11012,11014,11011",
@@ -544,10 +571,13 @@ def main():
         from datetime import datetime
 
         y_now = datetime.now().year
-        # YoY용 직전년 포함: years=2 & 2026 → 2024,2025,2026
         end = y_now
-        start = end - args.years + 1
-        years = list(range(start - 1, end + 1))
+        if args.min_year is not None:
+            years = list(range(int(args.min_year), end + 1))
+        else:
+            # YoY용 직전년 포함: years=2 & 2026 → 2024,2025,2026
+            start = end - args.years + 1
+            years = list(range(start - 1, end + 1))
         reprts = tuple(x.strip() for x in args.reprts.split(",") if x.strip())
         fetch_panel(
             years=years,
@@ -555,6 +585,7 @@ def main():
             sleep_sec=args.sleep,
             with_all=args.with_all,
             reprts=reprts,
+            skip_existing=not args.no_skip_existing,
         )
 
     if args.apply:
