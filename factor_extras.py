@@ -82,3 +82,23 @@ def attach_sector_relative(
     out["per_sec"] = out.groupby(gkeys, sort=False)["per"].transform(_robust_z)
     out["pbr_sec"] = out.groupby(gkeys, sort=False)["pbr"].transform(_robust_z)
     return out
+
+
+def compute_growth_stab(df: pd.DataFrame) -> pd.Series:
+    """
+    다년 성장 안정성 점수 (Phase B5).
+    sales_g3y / op_g3y / ni_g3y 평균 − 0.25×표준편차 (높을수록 우량).
+    극단치는 ±500% 윈저라이즈.
+    """
+    cols = [c for c in ("sales_g3y", "op_g3y", "ni_g3y") if c in df.columns]
+    if not cols:
+        return pd.Series(np.nan, index=df.index)
+    mat = df[cols].apply(pd.to_numeric, errors="coerce").clip(-500, 500)
+    mean = mat.mean(axis=1, skipna=True)
+    std = mat.std(axis=1, skipna=True)
+    n = mat.notna().sum(axis=1)
+    out = mean.copy()
+    mask = n >= 2
+    out.loc[mask] = mean.loc[mask] - 0.25 * std.loc[mask].fillna(0)
+    out.loc[n == 0] = np.nan
+    return out

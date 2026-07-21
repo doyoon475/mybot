@@ -35,13 +35,14 @@ except Exception:
     _cached_macro = None
     _DEF_SV = {"per": 25, "pbr": 25, "psr": 15, "ev": 15, "per_sec": 10, "pbr_sec": 10}
     _DEF_SQ = {
-        "roe": 22,
-        "opm": 12,
-        "gpm": 12,
-        "fscore": 12,
-        "vol": 16,
-        "accrual": 13,
-        "fcf": 13,
+        "roe": 18,
+        "opm": 10,
+        "gpm": 10,
+        "fscore": 10,
+        "vol": 14,
+        "accrual": 12,
+        "fcf": 12,
+        "growth": 14,
     }
 
     _DEF_SM = {"price": 40, "earn": 35, "factor": 25, "mom1": 20, "mom6": 40, "mom12": 40}
@@ -82,7 +83,8 @@ _SUB_DEFAULTS = {
     "sub_fscore": _ai_sub("sub_quality", "fscore", _DEF_SQ["fscore"]),
     "sub_vol": _ai_sub("sub_quality", "vol", _DEF_SQ.get("vol", 16)),
     "sub_accrual": _ai_sub("sub_quality", "accrual", _DEF_SQ.get("accrual", 13)),
-    "sub_fcf": _ai_sub("sub_quality", "fcf", _DEF_SQ.get("fcf", 13)),
+    "sub_fcf": _ai_sub("sub_quality", "fcf", _DEF_SQ.get("fcf", 12)),
+    "sub_growth": _ai_sub("sub_quality", "growth", _DEF_SQ.get("growth", 14)),
     "sub_price_mom": _ai_sub("sub_momentum", "price", _DEF_SM["price"]),
     "sub_earn_mom": _ai_sub("sub_momentum", "earn", _DEF_SM["earn"]),
     "sub_factor_mom": _ai_sub("sub_momentum", "factor", _DEF_SM["factor"]),
@@ -119,7 +121,8 @@ def apply_ai_weights_to_session(ai_weights: dict):
     st.session_state.sub_fscore = int(sq.get("fscore", 15))
     st.session_state.sub_vol = int(sq.get("vol", 16))
     st.session_state.sub_accrual = int(sq.get("accrual", 13))
-    st.session_state.sub_fcf = int(sq.get("fcf", 13))
+    st.session_state.sub_fcf = int(sq.get("fcf", 12))
+    st.session_state.sub_growth = int(sq.get("growth", 14))
     st.session_state.sub_price_mom = int(sm.get("price", 40))
     st.session_state.sub_earn_mom = int(sm.get("earn", 35))
     st.session_state.sub_factor_mom = int(sm.get("factor", 25))
@@ -146,11 +149,12 @@ def load_db_data():
     fm_sel = "f.factor_mom" if "factor_mom" in cols else "NULL AS factor_mom"
     acc_sel = "f.accrual" if "accrual" in cols else "NULL AS accrual"
     fcf_sel = "f.fcf_yield" if "fcf_yield" in cols else "NULL AS fcf_yield"
+    g_sel = "f.growth_stab" if "growth_stab" in cols else "NULL AS growth_stab"
     query_factor = f"""
         SELECT f.date, f.ticker, m.name as '종목명', m.sector as '섹터', 
                f.per, f.pbr, f.psr, f.ev_ebitda, f.roe, f.op_margin, f.gross_margin, 
                f.f_score, f.mom_1m, f.mom_6m, f.mom_12m, {earn_sel}, {fm_sel},
-               {acc_sel}, {fcf_sel}
+               {acc_sel}, {fcf_sel}, {g_sel}
         FROM monthly_factor f
         JOIN stock_master m ON f.ticker = m.ticker
         WHERE m.is_active = 1
@@ -161,7 +165,7 @@ def load_db_data():
     factor_cols = [
         'per', 'pbr', 'psr', 'ev_ebitda', 'roe', 'op_margin', 'gross_margin',
         'f_score', 'mom_1m', 'mom_6m', 'mom_12m', 'earn_mom', 'factor_mom',
-        'accrual', 'fcf_yield'
+        'accrual', 'fcf_yield', 'growth_stab'
     ]
     for col in factor_cols:
         if col in df_factor.columns:
@@ -323,11 +327,12 @@ with st.sidebar.expander("🔽 우량(Quality) 세부 비중", expanded=False):
     sub_vol = st.slider("저변동 vol_12m (낮을수록↑)", 0, 100, key="sub_vol", on_change=reset_ui_state)
     sub_accrual = st.slider("Accrual (NI-CFO)/Assets 낮을수록↑", 0, 100, key="sub_accrual", on_change=reset_ui_state)
     sub_fcf = st.slider("FCF Yield (높을수록↑)", 0, 100, key="sub_fcf", on_change=reset_ui_state)
+    sub_growth = st.slider("다년성장 growth_stab (높을수록↑)", 0, 100, key="sub_growth", on_change=reset_ui_state)
     
-    tot_qual_sub = sub_roe + sub_opm + sub_gpm + sub_fscore + sub_vol + sub_accrual + sub_fcf
-    f_roe, f_opm, f_gpm, f_fscore, f_vol, f_accrual, f_fcf = [
+    tot_qual_sub = sub_roe + sub_opm + sub_gpm + sub_fscore + sub_vol + sub_accrual + sub_fcf + sub_growth
+    f_roe, f_opm, f_gpm, f_fscore, f_vol, f_accrual, f_fcf, f_growth = [
         x / tot_qual_sub * real_w_qual if tot_qual_sub > 0 else 0
-        for x in (sub_roe, sub_opm, sub_gpm, sub_fscore, sub_vol, sub_accrual, sub_fcf)
+        for x in (sub_roe, sub_opm, sub_gpm, sub_fscore, sub_vol, sub_accrual, sub_fcf, sub_growth)
     ]
 
 with st.sidebar.expander("🔽 모멘텀(Momentum) 세부 비중", expanded=False):
@@ -384,6 +389,7 @@ def calculate_rank(df):
         + _wr(df["vol_12m"] if "vol_12m" in df.columns else pd.Series(np.nan, index=df.index), True, f_vol)
         + _wr(df["accrual"] if "accrual" in df.columns else pd.Series(np.nan, index=df.index), True, f_accrual)
         + _wr(df["fcf_yield"] if "fcf_yield" in df.columns else pd.Series(np.nan, index=df.index), False, f_fcf)
+        + _wr(df["growth_stab"] if "growth_stab" in df.columns else pd.Series(np.nan, index=df.index), False, f_growth)
     )
     earn_s = df["earn_mom"] if "earn_mom" in df.columns else pd.Series(np.nan, index=df.index)
     factor_s = df["factor_mom"] if "factor_mom" in df.columns else pd.Series(np.nan, index=df.index)
@@ -559,7 +565,7 @@ if st.session_state.step1_unlocked:
                 c for c in [
                     '순위', '종목명',
                     'per', 'pbr', 'psr', 'ev_ebitda', 'per_sec', 'pbr_sec',
-                    'roe', 'op_margin', 'gross_margin', 'f_score', 'vol_12m', 'accrual', 'fcf_yield',
+                    'roe', 'op_margin', 'gross_margin', 'f_score', 'vol_12m', 'accrual', 'fcf_yield', 'growth_stab',
                     'mom_1m', 'mom_6m', 'mom_12m', 'earn_mom', 'factor_mom'
                 ] if c in df_result.columns
             ]
@@ -635,6 +641,10 @@ if st.session_state.step1_unlocked:
                     + (
                         df_history.groupby("date")["fcf_yield"].rank(ascending=False, na_option="bottom") * f_fcf
                         if "fcf_yield" in df_history.columns else 0
+                    )
+                    + (
+                        df_history.groupby("date")["growth_stab"].rank(ascending=False, na_option="bottom") * f_growth
+                        if "growth_stab" in df_history.columns else 0
                     )
                 )
                 mom_hist = (

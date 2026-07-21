@@ -26,5 +26,5 @@ alwaysApply: true
 - 한 세션에 **Phase 전체를 억지로 몰아넣지 말 것**. A1→A2→A3… 단위로 커밋.
 - AI 매크로(`macro_ai_agent`) `sub_value` / `sub_quality` 키를 새 팩터에 맞춰 확장.
 - 가치 멀티플 `≤0`, 모멘텀 `≤-99.9` 는 결측 처리(기존 규칙 유지).
-- **완료:** Phase A1 `vol_12m`, A2 `per_sec`/`pbr_sec`, A3 `accrual`, A4 `fcf_yield`.
-- **다음:** Phase B5 (QuantKing 성장률 ETL) 또는 필요 시 A3–A4 전종목 `backfill_accrual_fcf.py` 실행.
+- **완료:** Phase A1–A4, Phase B5 `growth_stab`(QuantKing 3년 매출/OP/NI 증가율 안정성).
+- **다음:** Phase B6 `div_yield` + 주식수 희석.

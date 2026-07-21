@@ -73,6 +73,10 @@ def create_quant_database():
         mom_12m REAL,
         earn_mom REAL,              -- 이익 모멘텀(OP/NI YoY %)
         factor_mom REAL,            -- 팩터 모멘텀(런타임 산출 가능)
+        sales_g3y REAL,             -- 매출 3년 증가율
+        op_g3y REAL,                -- 영업이익 3년 증가율
+        ni_g3y REAL,                -- 순이익 3년 증가율
+        growth_stab REAL,           -- 다년 성장 안정성 점수
         
         PRIMARY KEY (date, ticker),
         FOREIGN KEY (ticker) REFERENCES stock_master(ticker)
@@ -80,7 +84,7 @@ def create_quant_database():
     ''')
     # 기존 DB 호환: 컬럼 누락 시 추가
     existing = {r[1] for r in cursor.execute("PRAGMA table_info(monthly_factor)")}
-    for col, typ in (("earn_mom", "REAL"), ("factor_mom", "REAL"), ("gross_margin", "REAL"), ("f_score", "INTEGER"), ("accrual", "REAL"), ("fcf_yield", "REAL")):
+    for col, typ in (("earn_mom", "REAL"), ("factor_mom", "REAL"), ("gross_margin", "REAL"), ("f_score", "INTEGER"), ("accrual", "REAL"), ("fcf_yield", "REAL"), ("sales_g3y", "REAL"), ("op_g3y", "REAL"), ("ni_g3y", "REAL"), ("growth_stab", "REAL")):
 
         if col not in existing:
             try:

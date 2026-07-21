@@ -146,6 +146,10 @@ def map_factor_columns(df: pd.DataFrame) -> pd.DataFrame:
             "해당분기 예상 영업이익의 전년동기대비 증가율",
             "해당분기 예상 영업이익의 전년동기대비 증가율. 실적 발표시 발표치 반영됨.",
         ],
+        # Phase B5: 다년 성장
+        "sales_g3y": ["직전년도 매출액의 3년전대비 증가율"],
+        "op_g3y": ["직전년도 영업이익의 3년전대비 증가율"],
+        "ni_g3y": ["직전년도 지배순이익의 3년전대비 증가율"],
     }
 
     cols = list(df.columns)
@@ -197,7 +201,20 @@ def map_factor_columns(df: pd.DataFrame) -> pd.DataFrame:
                 ("영업이익" in col or "지배순이익" in col or "EPS" in col)
                 and "전년" in col
                 and "증가" in col
+                and "3년전" not in col
             ):
+                rename[col] = std
+                used_src.add(col)
+                break
+            if std == "sales_g3y" and "매출액" in col and "3년전" in col and "증가" in col:
+                rename[col] = std
+                used_src.add(col)
+                break
+            if std == "op_g3y" and "영업이익" in col and "3년전" in col and "증가" in col:
+                rename[col] = std
+                used_src.add(col)
+                break
+            if std == "ni_g3y" and "지배순이익" in col and "3년전" in col and "증가" in col:
                 rename[col] = std
                 used_src.add(col)
                 break
@@ -348,7 +365,7 @@ def process_raw_data(skip_existing_months: bool = False, only_recent_files: int 
         insert_cols = [
             "date", "ticker", "per", "pbr", "psr", "ev_ebitda", "roe", "op_margin",
             "gross_margin", "debt_ratio", "f_score", "mom_1m", "mom_6m", "mom_12m",
-            "earn_mom",
+            "earn_mom", "sales_g3y", "op_g3y", "ni_g3y", "growth_stab",
         ]
         for col in insert_cols:
             if col not in df.columns:
@@ -360,6 +377,12 @@ def process_raw_data(skip_existing_months: bool = False, only_recent_files: int 
                     df.loc[df[col] <= 0, col] = float("nan")
                 if col in ("mom_1m", "mom_6m", "mom_12m"):
                     df.loc[df[col] <= -99.9, col] = float("nan")
+
+        try:
+            from factor_extras import compute_growth_stab
+            df["growth_stab"] = compute_growth_stab(df)
+        except Exception:
+            df["growth_stab"] = float("nan")
 
 
         # 문자열 컬럼만 빈문자, 팩터는 NaN 유지 → SQLite NULL
@@ -390,8 +413,9 @@ def process_raw_data(skip_existing_months: bool = False, only_recent_files: int 
                 cursor.executemany('''
                     INSERT OR REPLACE INTO monthly_factor 
                     (date, ticker, per, pbr, psr, ev_ebitda, roe, op_margin, gross_margin,
-                     debt_ratio, f_score, mom_1m, mom_6m, mom_12m, earn_mom)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     debt_ratio, f_score, mom_1m, mom_6m, mom_12m, earn_mom,
+                     sales_g3y, op_g3y, ni_g3y, growth_stab)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', insert_data)
                 conn.commit()  # 매 파일마다 커밋하여 lock 방지
                 break # 성공 시 루프 탈출
