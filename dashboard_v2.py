@@ -1,5 +1,6 @@
 import streamlit as st
 import os
+import json
 import sqlite3
 import pandas as pd
 import numpy as np
@@ -11,6 +12,8 @@ from dotenv import load_dotenv
 load_dotenv()
 TURSO_DB_URL = os.getenv("TURSO_DATABASE_URL")
 TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
+
+PORTFOLIO_LOCK_PATH = os.path.abspath("./data_cache/portfolio_lock.json")
 
 # ==========================================
 # 1. 초기 UI 및 Session State(메모리) 설정
@@ -61,7 +64,8 @@ def load_db_data():
     for col in factor_cols:
         if col in df_factor.columns:
             df_factor[col] = pd.to_numeric(df_factor[col], errors='coerce')
-    df_factor[factor_cols] = df_factor[factor_cols].fillna(0)
+    # 결측을 0으로 채우지 않음 — 0은 PER/PBR에서 최우량으로 오인됨
+    # (랭킹은 na_option='bottom'으로 결측을 최하위로 보냄)
     # 티커 표준화: '005930' / 'A005930' → 'A005930' (daily_price와 조인 정합)
     def _norm_ticker(x):
         s = str(x).strip()
@@ -175,41 +179,91 @@ with st.sidebar.expander("🔽 모멘텀(Momentum) 세부 비중", expanded=Fals
 # 4. 랭킹 연산 엔진
 # ==========================================
 def calculate_rank(df):
+    """
+    결측(NaN) 처리:
+    - PER/PBR 등 '낮을수록 좋음' · ROE 등 '높을수록 좋음' 모두
+      na_option='bottom' → 결측은 해당 팩터에서 최하위.
+    - 예전에 fillna(0) 후 PER 오름차순 랭크하면 결측(=0)이 1등이 되는 버그가 있었음.
+    """
+    def _wr(series, ascending, weight):
+        if weight == 0:
+            return 0.0
+        return series.rank(ascending=ascending, method="average", na_option="bottom") * weight
+
     val_rank = (
-        df['per'].rank(ascending=True) * f_per +
-        df['pbr'].rank(ascending=True) * f_pbr +
-        df['psr'].rank(ascending=True) * f_psr +
-        df['ev_ebitda'].rank(ascending=True) * f_ev
+        _wr(df["per"], True, f_per)
+        + _wr(df["pbr"], True, f_pbr)
+        + _wr(df["psr"], True, f_psr)
+        + _wr(df["ev_ebitda"], True, f_ev)
     )
     qual_rank = (
-        df['roe'].rank(ascending=False) * f_roe +
-        df['op_margin'].rank(ascending=False) * f_opm +
-        df['gross_margin'].rank(ascending=False) * f_gpm +
-        df['f_score'].rank(ascending=False) * f_fscore
+        _wr(df["roe"], False, f_roe)
+        + _wr(df["op_margin"], False, f_opm)
+        + _wr(df["gross_margin"], False, f_gpm)
+        + _wr(df["f_score"], False, f_fscore)
     )
     mom_rank = (
-        df['mom_1m'].rank(ascending=False) * f_mom1 +
-        df['mom_6m'].rank(ascending=False) * f_mom6 +
-        df['mom_12m'].rank(ascending=False) * f_mom12
+        _wr(df["mom_1m"], False, f_mom1)
+        + _wr(df["mom_6m"], False, f_mom6)
+        + _wr(df["mom_12m"], False, f_mom12)
     )
 
     # 내부 랭크합(낮을수록 우위) → 화면용 0~100점(높을수록 우위)
-    df['가치점수'] = ((1 - val_rank.rank(pct=True, ascending=True)) * 100).round(1)
-    df['우량점수'] = ((1 - qual_rank.rank(pct=True, ascending=True)) * 100).round(1)
-    df['모멘텀점수'] = ((1 - mom_rank.rank(pct=True, ascending=True)) * 100).round(1)
-    df['Total_Rank_Score'] = val_rank + qual_rank + mom_rank
-    # 종합점수 = 사이드바 비중 가중 합 (재정규화 없는 실측값)
-    # 예: 가치20%·우량50%·모멘텀30% → 89.2*0.2 + 98.4*0.5 + 87.6*0.3
-    df['종합점수'] = (
-        df['가치점수'] * real_w_val
-        + df['우량점수'] * real_w_qual
-        + df['모멘텀점수'] * real_w_mom
+    df["가치점수"] = ((1 - val_rank.rank(pct=True, ascending=True)) * 100).round(1)
+    df["우량점수"] = ((1 - qual_rank.rank(pct=True, ascending=True)) * 100).round(1)
+    df["모멘텀점수"] = ((1 - mom_rank.rank(pct=True, ascending=True)) * 100).round(1)
+    df["Total_Rank_Score"] = val_rank + qual_rank + mom_rank
+    df["종합점수"] = (
+        df["가치점수"] * real_w_val
+        + df["우량점수"] * real_w_qual
+        + df["모멘텀점수"] * real_w_mom
     ).round(2)
-    # 화면·전략 모두 종합점수(높을수록 우위) 기준
-    return df.sort_values(by='종합점수', ascending=False).reset_index(drop=True)
+    # 가치 팩터 전무(전부 결측)면 커버리지 표시용
+    value_cols = ["per", "pbr", "psr", "ev_ebitda"]
+    df["가치커버"] = df[value_cols].notna().sum(axis=1)
+    return df.sort_values(by="종합점수", ascending=False).reset_index(drop=True)
+
+
+def assign_trade_actions(df_ranked: pd.DataFrame) -> pd.DataFrame:
+    """1~10 매수 / 11~20 유지 / 21~50 매도 / 그 외 관망"""
+    out = df_ranked.copy()
+    if "순위" not in out.columns:
+        out.insert(0, "순위", np.arange(1, len(out) + 1))
+    out["액션"] = "관망"
+    out.loc[out["순위"] <= 10, "액션"] = "매수"
+    out.loc[(out["순위"] >= 11) & (out["순위"] <= 20), "액션"] = "유지"
+    out.loc[(out["순위"] >= 21) & (out["순위"] <= 50), "액션"] = "매도"
+    return out
+
+
+def load_portfolio_lock():
+    if not os.path.exists(PORTFOLIO_LOCK_PATH):
+        return None
+    try:
+        with open(PORTFOLIO_LOCK_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def save_portfolio_lock(df_locked: pd.DataFrame, factor_month: str, weights: dict):
+    os.makedirs(os.path.dirname(PORTFOLIO_LOCK_PATH), exist_ok=True)
+    cols = ["순위", "ticker", "종목명", "섹터", "가치점수", "우량점수", "모멘텀점수", "종합점수", "액션"]
+    rows = df_locked.head(50)[[c for c in cols if c in df_locked.columns]].copy()
+    payload = {
+        "locked_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "factor_month": factor_month,
+        "weights": weights,
+        "rows": rows.to_dict(orient="records"),
+    }
+    with open(PORTFOLIO_LOCK_PATH, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return payload
+
 
 df_result = calculate_rank(df_main.copy())
 df_result.insert(0, '순위', df_result.index + 1)
+df_result = assign_trade_actions(df_result)
 
 # ==========================================
 # 5. 점진적 공개(Progressive Disclosure) UI
@@ -223,20 +277,94 @@ col4.metric("모멘텀 비중", f"{real_w_mom*100:.0f}%")
 
 st.divider()
 
-if st.button("🚀 실시간 상위 20종목 포트폴리오 추출", type="primary", width="stretch"):
+if st.button("🚀 포트폴리오·예비 랭킹 보기", type="primary", width="stretch"):
     st.session_state.step1_unlocked = True
     st.session_state.step2_unlocked = False 
 
 if st.session_state.step1_unlocked:
-    with st.expander("🔽 Top 20 종목 리스트 (팩터 점수)", expanded=True):
-        display_cols = ['순위', '종목명', '섹터', '가치점수', '우량점수', '모멘텀점수', '종합점수']
+    display_cols = ['순위', '액션', '종목명', '섹터', '가치점수', '우량점수', '모멘텀점수', '종합점수']
+    lock = load_portfolio_lock()
+
+    # ---------- Block A: 이번 달 확정(고정) ----------
+    st.markdown("### 📌 이번 달 확정 운용 포트폴리오")
+    st.caption(
+        "리밸런싱일에 잠근 포트폴리오입니다. **한 달간 매매 기준점으로 유지**됩니다. "
+        "가중치를 바꿔도 여기 표는 다시 확정하기 전까지 변하지 않습니다."
+    )
+    lc1, lc2 = st.columns([2, 1])
+    with lc1:
+        if st.button("🔒 현재 종합점수 기준으로 이번 달 포트폴리오 확정", width="stretch"):
+            save_portfolio_lock(
+                df_result,
+                latest_date,
+                {
+                    "value": round(real_w_val, 4),
+                    "quality": round(real_w_qual, 4),
+                    "momentum": round(real_w_mom, 4),
+                },
+            )
+            st.success(f"확정 완료 — 기준월 {latest_date}")
+            st.rerun()
+    with lc2:
+        if lock and st.button("🔓 확정 해제", width="stretch"):
+            try:
+                os.remove(PORTFOLIO_LOCK_PATH)
+            except Exception:
+                pass
+            st.rerun()
+
+    if lock and lock.get("rows"):
+        df_locked = pd.DataFrame(lock["rows"])
+        w = lock.get("weights") or {}
+        st.info(
+            f"확정 시각 **{lock.get('locked_at', '-')}** · 팩터월 **{lock.get('factor_month', '-')}** · "
+            f"비중 V{w.get('value', 0)*100:.0f}/Q{w.get('quality', 0)*100:.0f}/M{w.get('momentum', 0)*100:.0f}"
+        )
+        show_lock_cols = [c for c in display_cols if c in df_locked.columns]
+        tab_buy, tab_hold, tab_sell = st.tabs(["매수 (1~10)", "유지 (11~20)", "매도 후보 (21~50)"])
+        with tab_buy:
+            buy_df = df_locked[df_locked["액션"] == "매수"] if "액션" in df_locked.columns else df_locked.head(10)
+            st.dataframe(buy_df[show_lock_cols], width="stretch", hide_index=True)
+        with tab_hold:
+            hold_df = df_locked[df_locked["액션"] == "유지"] if "액션" in df_locked.columns else df_locked.iloc[10:20]
+            st.dataframe(hold_df[show_lock_cols], width="stretch", hide_index=True)
+        with tab_sell:
+            sell_df = df_locked[df_locked["액션"] == "매도"] if "액션" in df_locked.columns else df_locked.iloc[20:50]
+            st.dataframe(sell_df[show_lock_cols], width="stretch", hide_index=True)
+    else:
+        st.warning("아직 확정된 운용 포트폴리오가 없습니다. 위에서 **확정**을 누르면 이번 달 기준점이 잠깁니다.")
+
+    st.divider()
+
+    # ---------- Block B: 실시간 예비 랭킹 ----------
+    st.markdown("### 👀 실시간 예비 랭킹 (참고용)")
+    st.caption(
+        "최신 팩터·사이드바 비중으로 **매일(데이터 갱신 시) 다시 계산**되는 참고 랭킹입니다. "
+        "바로 매매하지 말고, 다음 리밸런싱 후보를 보는 용도로 쓰세요."
+    )
+    with st.expander("🔽 예비 Top 20 · 종합점수", expanded=True):
         show_df = df_result.head(20)[display_cols].copy()
         st.dataframe(show_df, width="stretch", hide_index=True)
         st.caption(
-            "✔️ 가치/우량/모멘텀은 유니버스 상대점수(0~100). "
-            "**종합점수 = 가치×비중 + 우량×비중 + 모멘텀×비중**. "
-            "표·순위는 **종합점수 높은 순**으로 정렬됩니다."
+            "✔️ **종합점수 = 가치×비중 + 우량×비중 + 모멘텀×비중** · 정렬: 종합점수 높은 순 · "
+            "액션 미리보기: 1~10 매수 / 11~20 유지 / 21~50 매도"
         )
+
+        # 확정 대비 변동 (있으면)
+        if lock and lock.get("rows"):
+            locked_tickers = {r.get("ticker") for r in lock["rows"] if r.get("순위", 99) <= 20}
+            live_top20 = set(df_result.head(20)["ticker"].tolist()) if "ticker" in df_result.columns else set()
+            entered = live_top20 - locked_tickers
+            exited = locked_tickers - live_top20
+            if entered or exited:
+                c_in, c_out = st.columns(2)
+                with c_in:
+                    names_in = df_result[df_result["ticker"].isin(entered)]["종목명"].tolist() if entered else []
+                    st.write("**신규 진입 후보 (예비 Top20)**", ", ".join(names_in) if names_in else "-")
+                with c_out:
+                    lock_df = pd.DataFrame(lock["rows"])
+                    names_out = lock_df[lock_df["ticker"].isin(exited)]["종목명"].tolist() if exited and "종목명" in lock_df.columns else []
+                    st.write("**이탈 후보 (확정 Top20 대비)**", ", ".join(names_out) if names_out else "-")
 
         with st.expander("🔒 세부 재무·모멘텀 원천 지표 (유료 구독 예정)", expanded=False):
             st.info("상세 원천 지표(PER/PBR/ROE 등)는 향후 유료 구독 티어에서 제공합니다. 현재는 미리보기용으로만 노출됩니다.")
@@ -247,14 +375,20 @@ if st.session_state.step1_unlocked:
                 'mom_1m', 'mom_6m', 'mom_12m'
             ]
             detail_df = df_result.head(20)[detail_cols].copy()
-            num_cols = [c for c in detail_cols if c not in ('순위', '종목명')]
+            num_cols = [c for c in detail_cols if c not in ("순위", "종목명")]
+            # 화면의 0과 결측 구분: 결측은 빈칸
             detail_df[num_cols] = detail_df[num_cols].round(2)
             st.dataframe(detail_df, width="stretch", hide_index=True)
+            miss = int((df_result.head(20)["가치커버"] == 0).sum()) if "가치커버" in df_result.columns else 0
+            st.caption(
+                f"⚠️ Top20 중 가치지표(PER/PBR/PSR/EV)가 전부 결측인 종목: **{miss}**개. "
+                "결측은 랭킹에서 최하위로 처리됩니다(0으로 채워 우대하지 않음)."
+            )
     
     st.divider()
     st.markdown("### 📈 Step 2: 실전 다이내믹 시계열 백테스터")
     st.info("💡 **알림**: 팩터는 월별 롤링 리밸런싱, **자산 평가는 매일 종가(일별 주가)**로 반영합니다. 적립금은 매월 첫 거래일에만 투입됩니다.")
-    st.caption("✔️ 투자 룰(종합점수 순위): 1~10위 매수 / 11~20위 유지 (최대 비중 15% 캡) / 21위 밖 전량 매도")
+    st.caption("✔️ 투자 룰(종합점수 순위): 1~10위 매수 / 11~20위 유지(최대 비중 15% 캡) / 21위 밖 매도 · 백테스트는 확정 규칙과 동일하게 **월 1회**만 교체")
     st.caption("💸 수수료 및 슬리피지: 매수 시 0.15%, 매도 시 0.30% (세금 포함) 적용")
     
     bc1, bc2, bc3 = st.columns(3)
@@ -282,17 +416,23 @@ if st.session_state.step1_unlocked:
                 CAP_LIMIT = 0.15
                 
                 df_history = df_all.copy()
-                val_hist = df_history.groupby('date')['per'].rank(ascending=True) * f_per + \
-                           df_history.groupby('date')['pbr'].rank(ascending=True) * f_pbr + \
-                           df_history.groupby('date')['psr'].rank(ascending=True) * f_psr + \
-                           df_history.groupby('date')['ev_ebitda'].rank(ascending=True) * f_ev
-                qual_hist = df_history.groupby('date')['roe'].rank(ascending=False) * f_roe + \
-                            df_history.groupby('date')['op_margin'].rank(ascending=False) * f_opm + \
-                            df_history.groupby('date')['gross_margin'].rank(ascending=False) * f_gpm + \
-                            df_history.groupby('date')['f_score'].rank(ascending=False) * f_fscore
-                mom_hist = df_history.groupby('date')['mom_1m'].rank(ascending=False) * f_mom1 + \
-                           df_history.groupby('date')['mom_6m'].rank(ascending=False) * f_mom6 + \
-                           df_history.groupby('date')['mom_12m'].rank(ascending=False) * f_mom12
+                val_hist = (
+                    df_history.groupby("date")["per"].rank(ascending=True, na_option="bottom") * f_per
+                    + df_history.groupby("date")["pbr"].rank(ascending=True, na_option="bottom") * f_pbr
+                    + df_history.groupby("date")["psr"].rank(ascending=True, na_option="bottom") * f_psr
+                    + df_history.groupby("date")["ev_ebitda"].rank(ascending=True, na_option="bottom") * f_ev
+                )
+                qual_hist = (
+                    df_history.groupby("date")["roe"].rank(ascending=False, na_option="bottom") * f_roe
+                    + df_history.groupby("date")["op_margin"].rank(ascending=False, na_option="bottom") * f_opm
+                    + df_history.groupby("date")["gross_margin"].rank(ascending=False, na_option="bottom") * f_gpm
+                    + df_history.groupby("date")["f_score"].rank(ascending=False, na_option="bottom") * f_fscore
+                )
+                mom_hist = (
+                    df_history.groupby("date")["mom_1m"].rank(ascending=False, na_option="bottom") * f_mom1
+                    + df_history.groupby("date")["mom_6m"].rank(ascending=False, na_option="bottom") * f_mom6
+                    + df_history.groupby("date")["mom_12m"].rank(ascending=False, na_option="bottom") * f_mom12
+                )
 
                 # 월별 종합점수(0~100 가중합) → 높을수록 1위 (매수/유지/매도 기준)
                 df_history['_val'] = val_hist

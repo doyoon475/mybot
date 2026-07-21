@@ -292,24 +292,36 @@ def process_raw_data(skip_existing_months: bool = False, only_recent_files: int 
             
         df['date'] = target_month
         
-        # DB 삽입용 필수 컬럼 방어 코드 (없으면 0.0 처리)
-        insert_cols = ['date', 'ticker', 'per', 'pbr', 'psr', 'ev_ebitda', 'roe', 'op_margin', 'gross_margin', 'debt_ratio', 'f_score', 'mom_1m', 'mom_6m', 'mom_12m']
-        missing_cols = {col: 0.0 for col in insert_cols if col not in df.columns}
-        if missing_cols:
-            df = df.assign(**missing_cols)
+        # DB 삽입: 없는 팩터 컬럼은 NaN 유지 (0.0으로 채우면 랭킹 왜곡)
+        insert_cols = [
+            "date", "ticker", "per", "pbr", "psr", "ev_ebitda", "roe", "op_margin",
+            "gross_margin", "debt_ratio", "f_score", "mom_1m", "mom_6m", "mom_12m",
+        ]
+        for col in insert_cols:
+            if col not in df.columns:
+                df[col] = float("nan")
+            elif col not in ("date", "ticker"):
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        # 문자열 컬럼만 빈문자, 팩터는 NaN 유지 → SQLite NULL
+        if "name" in df.columns:
+            df["name"] = df["name"].fillna("")
                 
-        # NaN 처리 및 튜플 변환 (문자열 컬럼에 0이 들어가는 에러 방지)
-        for col in df.columns:
-            if df[col].dtype == 'object' or pd.api.types.is_string_dtype(df[col]):
-                df[col] = df[col].fillna("")
-            else:
-                df[col] = df[col].fillna(0.0)
-                
-        insert_data = list(zip(
-            df['date'], df['ticker'], df['per'], df['pbr'], df['psr'], df['ev_ebitda'], 
-            df['roe'], df['op_margin'], df['gross_margin'], df['debt_ratio'], 
-            df['f_score'], df['mom_1m'], df['mom_6m'], df['mom_12m']
-        ))
+        insert_data = []
+        def _nullify(v):
+            if v is None:
+                return None
+            try:
+                if pd.isna(v):
+                    return None
+            except Exception:
+                pass
+            return v
+
+        insert_data = [
+            tuple(_nullify(v) for v in vals)
+            for vals in df[insert_cols].itertuples(index=False, name=None)
+        ]
         
         # 고속 병합 삽입
         retry_count = 0

@@ -45,11 +45,12 @@ ACCOUNT_ALIASES = {
         "지배기업의 소유주에게 귀속되는 당기순이익",
         "지배주주순이익",
     ],
-    "equity": ["자본총계", "자본금"],
+    "equity": ["자본총계"],
     "assets": ["자산총계"],
     "liabilities": ["부채총계"],
-    "gross_profit": ["매출총이익", "매출총이익(손실)"],
+    "gross_profit": ["매출총이익", "매출총이익(손실)", "매출 총이익"],
     "ebitda": ["EBITDA", "ebitda"],
+    "cfo": ["영업활동현금흐름", "영업활동으로인한현금흐름", "영업활동으로 인한 현금흐름"],
 }
 
 
@@ -286,12 +287,79 @@ def safe_div(a: Optional[float], b: Optional[float]) -> Optional[float]:
     return a / b
 
 
+def compute_f_score(
+    fund: Dict[str, Optional[float]],
+    prev: Optional[Dict[str, Optional[float]]] = None,
+) -> Optional[int]:
+    """
+    Piotroski F-Score 근사 (0~9).
+    전년 캐시가 있으면 YoY 항목 포함, 없으면 당기 신호만으로 가능한 점수만 합산.
+    계산 불가 시 None (0으로 채우지 않음).
+    """
+    ni = fund.get("net_income")
+    assets = fund.get("assets")
+    eq = fund.get("equity")
+    rev = fund.get("revenue")
+    op = fund.get("op_income")
+    gp = fund.get("gross_profit")
+    liab = fund.get("liabilities")
+    cfo = fund.get("cfo")
+
+    if all(v is None for v in (ni, assets, eq, rev, op, gp, liab, cfo)):
+        return None
+
+    score = 0
+    # 1) ROA > 0
+    if assets and assets > 0 and ni is not None and ni > 0:
+        score += 1
+    # 2) 영업CF > 0 (없으면 영업이익 > 0 으로 대체)
+    if cfo is not None:
+        if cfo > 0:
+            score += 1
+    elif op is not None and op > 0:
+        score += 1
+    # 3) 당기순이익 > 0
+    if ni is not None and ni > 0:
+        score += 1
+    # 4) 매출총이익률 > 0
+    gpm = safe_div(gp, rev)
+    if gpm is not None and gpm > 0:
+        score += 1
+    # 5) 레버리지(부채/자산) 낮음 근사: < 0.7
+    lev = safe_div(liab, assets)
+    if lev is not None and lev < 0.7:
+        score += 1
+
+    if prev:
+        # 6) ROA 개선
+        ra = safe_div(ni, assets)
+        ra0 = safe_div(prev.get("net_income"), prev.get("assets"))
+        if ra is not None and ra0 is not None and ra > ra0:
+            score += 1
+        # 7) 레버리지 감소
+        lev0 = safe_div(prev.get("liabilities"), prev.get("assets"))
+        if lev is not None and lev0 is not None and lev < lev0:
+            score += 1
+        # 8) GPM 개선
+        gpm0 = safe_div(prev.get("gross_profit"), prev.get("revenue"))
+        if gpm is not None and gpm0 is not None and gpm > gpm0:
+            score += 1
+        # 9) 자산회전율 개선 (매출/자산)
+        at = safe_div(rev, assets)
+        at0 = safe_div(prev.get("revenue"), prev.get("assets"))
+        if at is not None and at0 is not None and at > at0:
+            score += 1
+
+    return int(score)
+
+
 def build_row(
     ticker: str,
     target_month: str,
     mom: dict,
     fund: Dict[str, Optional[float]],
     marcap: Optional[float],
+    prev_fund: Optional[Dict[str, Optional[float]]] = None,
 ) -> Dict[str, Any]:
     ni = fund.get("net_income")
     eq = fund.get("equity")
@@ -301,23 +369,23 @@ def build_row(
     liab = fund.get("liabilities")
     ebitda = fund.get("ebitda")
 
-    # PER: 적자이면 None (랭킹에서 불리하게 두려면 대시보드에서 처리)
     per = safe_div(marcap, ni) if (ni is not None and ni > 0 and marcap) else None
     pbr = safe_div(marcap, eq) if (eq is not None and eq > 0 and marcap) else None
     psr = safe_div(marcap, rev) if (rev is not None and rev > 0 and marcap) else None
-    # EV/EBITDA 근사: EV≈시총+순부채 ≈ 시총+부채-현금(현금 없으면 시총+부채)
-    # 1차: marcap / ebitda (조악) 또는 None
     ev_ebitda = None
     if ebitda and ebitda > 0 and marcap:
         ev_ebitda = marcap / ebitda
+    elif op and op > 0 and marcap and liab is not None:
+        # EV ≈ 시총 + 부채 (현금 미차감 근사) / 영업이익
+        ev_ebitda = (marcap + max(liab, 0)) / op
     elif op and op > 0 and marcap:
-        # 감가삼각 없이 영업이익으로 임시 근사 (표시용, 추후 개선)
         ev_ebitda = marcap / op
 
     roe = safe_div(ni, eq) * 100.0 if (ni is not None and eq) else None
     op_margin = safe_div(op, rev) * 100.0 if (op is not None and rev) else None
     gross_margin = safe_div(gp, rev) * 100.0 if (gp is not None and rev) else None
     debt_ratio = safe_div(liab, eq) * 100.0 if (liab is not None and eq) else None
+    f_score = compute_f_score(fund, prev_fund)
 
     return {
         "date": target_month,
@@ -330,7 +398,7 @@ def build_row(
         "op_margin": op_margin,
         "gross_margin": gross_margin,
         "debt_ratio": debt_ratio,
-        "f_score": None,  # 2차 구현
+        "f_score": f_score,
         "mom_1m": mom.get("mom_1m"),
         "mom_6m": mom.get("mom_6m"),
         "mom_12m": mom.get("mom_12m"),
@@ -420,12 +488,17 @@ def build_monthly_factors(
     for i, ticker in enumerate(tickers, 1):
         mom = mom_map.get(ticker, {})
         fund: Dict[str, Optional[float]] = {k: None for k in ACCOUNT_ALIASES}
+        prev_fund: Optional[Dict[str, Optional[float]]] = None
         if dart is not None:
             df_fin = fetch_finstate_cached(dart, ticker, fin_year, sleep_sec=sleep_sec)
             if not df_fin.empty:
                 fund = extract_fundamentals(df_fin)
                 if any(v is not None for v in fund.values()):
                     ok_fund += 1
+            # F-Score YoY용 전년 (캐시 hit면 sleep 거의 없음)
+            df_prev = fetch_finstate_cached(dart, ticker, fin_year - 1, sleep_sec=0.05)
+            if not df_prev.empty:
+                prev_fund = extract_fundamentals(df_prev)
 
         marcap = marcap_map.get(ticker)
         # 시총 없으면 종가×상장주식수 근사
@@ -436,7 +509,7 @@ def build_monthly_factors(
                 if stocks:
                     marcap = float(mom["close"]) * stocks
 
-        rows.append(build_row(ticker, target_month, mom, fund, marcap))
+        rows.append(build_row(ticker, target_month, mom, fund, marcap, prev_fund))
         if i % 50 == 0 or i == len(tickers):
             print(f"  [{i}/{len(tickers)}] 진행 | DART재무 성공누적 {ok_fund}")
 
