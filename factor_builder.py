@@ -57,18 +57,44 @@ ACCOUNT_ALIASES = {
         "매출총이익 금액",
     ],
     "ebitda": ["EBITDA", "ebitda"],
-    "cfo": ["영업활동현금흐름", "영업활동으로인한현금흐름", "영업활동으로 인한 현금흐름"],
+    "cfo": [
+        "영업활동현금흐름",
+        "영업활동으로인한현금흐름",
+        "영업활동으로 인한 현금흐름",
+        "영업활동으로 인한 현금흐름(간접법)",
+    ],
+    "capex": [
+        "유형자산의 취득",
+        "유형자산의취득",
+        "유형자산의 취득으로 인한 현금유출",
+        "기계장치의 취득",
+        "건설중인자산의 취득",
+    ],
 }
 
 
+FINANCIAL_SECTOR_KEYWORDS = ("금융", "은행", "보험", "증권", "카드", "캐피탈", "저축")
+
+
+def is_financial_sector(sector: Optional[str]) -> bool:
+    s = str(sector or "")
+    return any(k in s for k in FINANCIAL_SECTOR_KEYWORDS)
+
+
 def ensure_factor_columns(conn: Optional[sqlite3.Connection] = None) -> None:
-    """earn_mom 등 신규 컬럼을 기존 DB에 안전하게 추가."""
+    """신규 팩터 컬럼을 기존 DB에 안전하게 추가."""
     own = conn is None
     if own:
         conn = _connect()
     try:
         existing = {r[1] for r in conn.execute("PRAGMA table_info(monthly_factor)")}
-        for col, typ in (("earn_mom", "REAL"), ("factor_mom", "REAL")):
+        for col, typ in (
+            ("earn_mom", "REAL"),
+            ("factor_mom", "REAL"),
+            ("accrual", "REAL"),
+            ("fcf_yield", "REAL"),
+            ("vol_12m", "REAL"),
+        ):
             if col not in existing:
                 conn.execute(f"ALTER TABLE monthly_factor ADD COLUMN {col} {typ}")
                 print(f"  ➕ monthly_factor.{col} 컬럼 추가")
@@ -157,6 +183,11 @@ def _cache_path(ticker: str, year: int) -> str:
     return os.path.join(DART_CACHE_DIR, f"{_dart_code(ticker)}_{year}.parquet")
 
 
+def _cache_path_all(ticker: str, year: int) -> str:
+    os.makedirs(DART_CACHE_DIR, exist_ok=True)
+    return os.path.join(DART_CACHE_DIR, f"{_dart_code(ticker)}_{year}_all.parquet")
+
+
 def fetch_finstate_cached(dart, ticker: str, year: int, sleep_sec: float = 1.0) -> pd.DataFrame:
     path = _cache_path(ticker, year)
     if os.path.exists(path):
@@ -194,14 +225,143 @@ def fetch_finstate_cached(dart, ticker: str, year: int, sleep_sec: float = 1.0) 
     return pd.DataFrame()
 
 
+def fetch_finstate_all_cached(
+    dart,
+    ticker: str,
+    year: int,
+    sleep_sec: float = 1.0,
+) -> pd.DataFrame:
+    """
+    단일회사 전체 재무제표(fnlttSinglAcntAll) — CF(CFO/CapEx) 포함.
+    BS/IS 전용 캐시와 분리해 {code}_{year}_all.parquet 로 저장.
+    """
+    path = _cache_path_all(ticker, year)
+    if os.path.exists(path):
+        try:
+            return pd.read_parquet(path)
+        except Exception:
+            pass
+    if dart is None:
+        return pd.DataFrame()
+
+    try:
+        from OpenDartReader import dart_finstate
+    except Exception:
+        try:
+            import OpenDartReader.dart_finstate as dart_finstate
+        except Exception as e:
+            print(f"  ⚠️ dart_finstate import 실패: {e}")
+            return pd.DataFrame()
+
+    time.sleep(max(0.3, sleep_sec))
+    code = _dart_code(ticker)
+    # corp_code 조회 (OpenDartReader 내부 코드)
+    corp_code = code
+    try:
+        if hasattr(dart, "find_corp_code"):
+            found = dart.find_corp_code(code)
+            if found:
+                corp_code = found
+    except Exception:
+        pass
+
+    for reprt in ("11011", "11014", "11012", "11013"):
+        for fs_div in ("CFS", "OFS"):
+            try:
+                df = dart_finstate.finstate_all(
+                    dart.api_key, corp_code, year, reprt_code=reprt, fs_div=fs_div
+                )
+            except Exception:
+                continue
+            if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+                continue
+            try:
+                df.to_parquet(path, index=False)
+            except Exception:
+                pass
+            return df
+    return pd.DataFrame()
+
+
+def _sum_accounts(df: pd.DataFrame, keys: List[str]) -> Optional[float]:
+    """CapEx처럼 여러 계정을 합산할 때 사용."""
+    if df is None or df.empty or "account_nm" not in df.columns:
+        return None
+    work = df
+    if "fs_div" in df.columns:
+        cons = df[df["fs_div"].astype(str).str.upper().isin(["CFS", "연결"])]
+        if not cons.empty:
+            work = cons
+    names = work["account_nm"].astype(str)
+    total = 0.0
+    found = False
+    for key in keys:
+        hit = work[names == key]
+        if hit.empty:
+            hit = work[names.str.contains(re.escape(key), na=False)]
+        for _, row in hit.iterrows():
+            for col in ("thstrm_amount", "thstrm_add_amount", "thstrm"):
+                if col in row.index:
+                    val = _to_float(row[col])
+                    if val is not None:
+                        total += abs(val)  # 유출액은 부호 혼재 → 절대값 합산
+                        found = True
+                        break
+    return total if found else None
+
+
 def extract_fundamentals(df: pd.DataFrame) -> Dict[str, Optional[float]]:
     out = {k: _pick_account(df, aliases) for k, aliases in ACCOUNT_ALIASES.items()}
+    # CapEx: 단일 픽 실패 시 후보 합산
+    if out.get("capex") is None:
+        out["capex"] = _sum_accounts(df, ACCOUNT_ALIASES["capex"])
     # 자본총계가 자본금만 잡히는 경우 방지: 자본총계 재탐색
     if out.get("equity") is not None and out["equity"] < 1e9:
         eq2 = _pick_account(df, ["자본총계"])
         if eq2 is not None:
             out["equity"] = eq2
     return out
+
+
+def merge_fundamentals(
+    base: Dict[str, Optional[float]],
+    extra: Dict[str, Optional[float]],
+) -> Dict[str, Optional[float]]:
+    """extra의 non-null로 base를 보강 (CFO/CapEx 등)."""
+    out = dict(base)
+    for k, v in extra.items():
+        if v is not None and (out.get(k) is None):
+            out[k] = v
+        elif v is not None and k in ("cfo", "capex"):
+            out[k] = v  # CF는 all 제표 우선
+    return out
+
+
+def compute_accrual(fund: Dict[str, Optional[float]]) -> Optional[float]:
+    """(NI − CFO) / Assets × 100. 낮을수록 이익 품질↑."""
+    ni = fund.get("net_income")
+    cfo = fund.get("cfo")
+    assets = fund.get("assets")
+    if ni is None or cfo is None or not assets:
+        return None
+    return (ni - cfo) / assets * 100.0
+
+
+def compute_fcf_yield(
+    fund: Dict[str, Optional[float]],
+    marcap: Optional[float],
+    financial: bool = False,
+) -> Optional[float]:
+    """(CFO − |CapEx|) / 시총 × 100. 금융주는 NULL."""
+    if financial:
+        return None
+    cfo = fund.get("cfo")
+    if cfo is None or not marcap or marcap <= 0:
+        return None
+    capex = fund.get("capex")
+    capex_v = abs(capex) if capex is not None else 0.0
+    fcf = cfo - capex_v
+    return fcf / marcap * 100.0
 
 
 def load_listings_marcap() -> pd.DataFrame:
@@ -397,6 +557,7 @@ def build_row(
     fund: Dict[str, Optional[float]],
     marcap: Optional[float],
     prev_fund: Optional[Dict[str, Optional[float]]] = None,
+    sector: Optional[str] = None,
 ) -> Dict[str, Any]:
     from momentum_engine import compute_earn_mom_from_fund
 
@@ -427,6 +588,9 @@ def build_row(
     debt_ratio = safe_div(liab, eq) * 100.0 if (liab is not None and eq) else None
     f_score = compute_f_score(fund, prev_fund)
     earn_mom = compute_earn_mom_from_fund(fund, prev_fund)
+    financial = is_financial_sector(sector)
+    accrual = compute_accrual(fund)
+    fcf_yield = compute_fcf_yield(fund, marcap, financial=financial)
 
     return {
         "date": target_month,
@@ -444,6 +608,8 @@ def build_row(
         "mom_6m": mom.get("mom_6m"),
         "mom_12m": mom.get("mom_12m"),
         "earn_mom": earn_mom,
+        "accrual": accrual,
+        "fcf_yield": fcf_yield,
     }
 
 
@@ -467,10 +633,12 @@ def upsert_factors(rows: List[dict]):
             r.get("gross_margin"),
             r.get("debt_ratio"),
             r.get("f_score"),
+            r.get("fcf_yield"),
             r.get("mom_1m"),
             r.get("mom_6m"),
             r.get("mom_12m"),
             r.get("earn_mom"),
+            r.get("accrual"),
         )
         for r in rows
     ]
@@ -478,8 +646,8 @@ def upsert_factors(rows: List[dict]):
         """
         INSERT OR REPLACE INTO monthly_factor
         (date, ticker, per, pbr, psr, ev_ebitda, roe, op_margin, gross_margin,
-         debt_ratio, f_score, mom_1m, mom_6m, mom_12m, earn_mom)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         debt_ratio, f_score, fcf_yield, mom_1m, mom_6m, mom_12m, earn_mom, accrual)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         data,
     )
@@ -500,10 +668,13 @@ def build_monthly_factors(
     print("=" * 60)
 
     conn = _connect()
-    tickers = pd.read_sql(
-        "SELECT ticker FROM stock_master WHERE is_active = 1 ORDER BY ticker",
+    master = pd.read_sql(
+        "SELECT ticker, sector FROM stock_master WHERE is_active = 1 ORDER BY ticker",
         conn,
-    )["ticker"].map(_norm_ticker).tolist()
+    )
+    master["ticker"] = master["ticker"].map(_norm_ticker)
+    sector_map = master.set_index("ticker")["sector"].to_dict()
+    tickers = master["ticker"].tolist()
     if limit:
         tickers = tickers[:limit]
         print(f"🔬 테스트 모드: {len(tickers)}종목만")
@@ -530,6 +701,7 @@ def build_monthly_factors(
 
     rows = []
     ok_fund = 0
+    ok_cf = 0
     for i, ticker in enumerate(tickers, 1):
         mom = mom_map.get(ticker, {})
         fund: Dict[str, Optional[float]] = {k: None for k in ACCOUNT_ALIASES}
@@ -540,10 +712,21 @@ def build_monthly_factors(
                 fund = extract_fundamentals(df_fin)
                 if any(v is not None for v in fund.values()):
                     ok_fund += 1
+            # Phase A3–A4: CFO/CapEx 는 전체재무제표 API
+            df_all = fetch_finstate_all_cached(dart, ticker, fin_year, sleep_sec=sleep_sec)
+            if not df_all.empty:
+                fund = merge_fundamentals(fund, extract_fundamentals(df_all))
+                if fund.get("cfo") is not None:
+                    ok_cf += 1
             # F-Score YoY용 전년 (캐시 hit면 sleep 거의 없음)
             df_prev = fetch_finstate_cached(dart, ticker, fin_year - 1, sleep_sec=0.05)
             if not df_prev.empty:
                 prev_fund = extract_fundamentals(df_prev)
+            df_prev_all = fetch_finstate_all_cached(dart, ticker, fin_year - 1, sleep_sec=0.05)
+            if not df_prev_all.empty and prev_fund is not None:
+                prev_fund = merge_fundamentals(prev_fund, extract_fundamentals(df_prev_all))
+            elif not df_prev_all.empty:
+                prev_fund = extract_fundamentals(df_prev_all)
 
         marcap = marcap_map.get(ticker)
         # 시총 없으면 종가×상장주식수 근사
@@ -554,14 +737,27 @@ def build_monthly_factors(
                 if stocks:
                     marcap = float(mom["close"]) * stocks
 
-        rows.append(build_row(ticker, target_month, mom, fund, marcap, prev_fund))
+        rows.append(
+            build_row(
+                ticker,
+                target_month,
+                mom,
+                fund,
+                marcap,
+                prev_fund,
+                sector=sector_map.get(ticker),
+            )
+        )
         if i % 50 == 0 or i == len(tickers):
-            print(f"  [{i}/{len(tickers)}] 진행 | DART재무 성공누적 {ok_fund}")
+            print(f"  [{i}/{len(tickers)}] 진행 | DART재무 {ok_fund} | CFO {ok_cf}")
 
     conn.close()
     out = pd.DataFrame(rows)
     upsert_factors(rows)
     print(f"📊 DART 재무 매핑 성공: {ok_fund}/{len(tickers)}")
+    print(f"📊 CFO 확보: {ok_cf}/{len(tickers)}")
+    print(f"📊 accrual 비결측: {out['accrual'].notna().sum()}")
+    print(f"📊 fcf_yield 비결측: {out['fcf_yield'].notna().sum()}")
     print(f"📊 모멘텀 비어있지 않은 종목: {out['mom_12m'].notna().sum()}")
     return out
 

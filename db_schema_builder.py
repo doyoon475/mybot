@@ -61,6 +61,7 @@ def create_quant_database():
         gross_margin REAL,          -- 매출총이익률 (V5 혁신 지표)
         debt_ratio REAL,            -- 부채비율
         f_score INTEGER,            -- 재무건전성 점수
+        accrual REAL,               -- (NI-CFO)/Assets % (낮을수록 우량)
         
         -- 현금흐름 및 주주환원
         fcf_yield REAL,
@@ -79,7 +80,8 @@ def create_quant_database():
     ''')
     # 기존 DB 호환: 컬럼 누락 시 추가
     existing = {r[1] for r in cursor.execute("PRAGMA table_info(monthly_factor)")}
-    for col, typ in (("earn_mom", "REAL"), ("factor_mom", "REAL"), ("gross_margin", "REAL"), ("f_score", "INTEGER")):
+    for col, typ in (("earn_mom", "REAL"), ("factor_mom", "REAL"), ("gross_margin", "REAL"), ("f_score", "INTEGER"), ("accrual", "REAL"), ("fcf_yield", "REAL")):
+
         if col not in existing:
             try:
                 cursor.execute(f"ALTER TABLE monthly_factor ADD COLUMN {col} {typ}")
