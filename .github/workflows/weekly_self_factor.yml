@@ -1,0 +1,59 @@
+name: Weekly Self Factor Build (DART)
+
+# 주 1회 DART 재무를 새로 받아 monthly_factor 를 자체 생성합니다.
+# 평일 daily 는 SKIP_DART=1 (모멘텀+캐시), 주말에 재무 갱신.
+
+on:
+  schedule:
+    # 일요일 한국시간 01:00 ≈ UTC 토요일 16:00
+    - cron: '0 16 * * 6'
+  workflow_dispatch:
+
+jobs:
+  self-factor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download DB
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p data_cache
+          gh release download quant-db-latest -p 'quant_history.db.zst' -D data_cache --clobber
+          python db_snapshot.py decompress
+
+      - name: Build self factors (DART + price)
+        env:
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          SKIP_DART: '0'
+          FACTOR_MODE: 'self'
+          SKIP_QUANTKING: '1'
+          # 주가 증분은 가볍게
+          PRICE_LOOKBACK_DAYS: '7'
+        run: |
+          python daily_updater.py
+          # 전체 종목 DART (캐시 있으면 빠름)
+          python factor_builder.py --sleep 1.0
+
+      - name: Upload DB
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python db_snapshot.py compress
+          gh release upload quant-db-latest data_cache/quant_history.db.zst --clobber

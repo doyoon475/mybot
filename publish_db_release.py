@@ -33,7 +33,7 @@ def main():
     else:
         print(f"Release '{TAG}' 업로드(덮어쓰기)...")
         subprocess.check_call(["gh", "release", "upload", TAG, ZST_PATH, "--clobber"])
-    print("✅ 완료. GitHub Secrets에 QUANTKING_TOKEN 등을 넣고 Actions를 켜세요.")
+    print("완료. GitHub Secrets에 QUANTKING_EMAIL/PASSWORD 또는 TOKEN을 넣고 Actions를 켜세요.")
 
 
 if __name__ == "__main__":

@@ -7,3 +7,5 @@ data_cache/
 .env
 daily_price
 debug_html/
+
+data_cache/dart_cache/

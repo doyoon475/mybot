@@ -9,9 +9,9 @@ name: Daily Quant Data Accumulate
 #   python publish_db_release.py
 #
 # --- GitHub Secrets ---
-#   QUANTKING_TOKEN  (권장: 브라우저 F12 → Application → localStorage → token)
-#   또는 QUANTKING_EMAIL + QUANTKING_PASSWORD
-#   DART_API_KEY / GEMINI_API_KEY (선택)
+#   QUANTKING_EMAIL + QUANTKING_PASSWORD  (또는 QUANTKING_TOKEN)
+#   DART_API_KEY   ← 자체 팩터 빌드에 필수 (opendart.fss.or.kr)
+#   GEMINI_API_KEY (선택)
 
 on:
   schedule:
@@ -63,6 +63,10 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           QUANTKING_PAGES: '2'
           PRICE_LOOKBACK_DAYS: '14'
+          # both = 퀀트킹 + 자체팩터 병행 (전환기). 구독 종료 후 self 로 변경
+          FACTOR_MODE: 'both'
+          # 전체 종목 DART는 수 시간 소요 → 일일에는 모멘텀 위주, 주말에 전체
+          SKIP_DART: '1'
         run: python daily_updater.py
 
       - name: Compress & upload DB to Release

@@ -39,6 +39,158 @@ COLUMN_MAPPING = {
     '1년 등락률 (%)': 'mom_12m'
 }
 
+
+def extract_target_month(filename: str, file_path: str = "") -> str:
+    """
+    1) 파일명 2023.04.11 형태
+    2) 퀀트킹 서버명 1681220469_1.xlsx (unix timestamp = 게시일)
+    3) mtime (다운로드 시각 — 과거 소급에 부적합, 최후 수단)
+    """
+    date_match = re.search(r"20\d{2}\.\d{2}\.\d{2}", filename)
+    if date_match:
+        return date_match.group(0)[:7].replace(".", "-")
+
+    ts_match = re.match(r"^(\d{9,10})_\d+\.(xlsx|xls|csv)$", filename, re.I)
+    if ts_match:
+        try:
+            from datetime import datetime
+            return datetime.fromtimestamp(int(ts_match.group(1))).strftime("%Y-%m")
+        except Exception:
+            pass
+
+    if file_path and os.path.exists(file_path):
+        return time.strftime("%Y-%m", time.localtime(os.path.getmtime(file_path)))
+    return "1900-01"
+
+
+def _norm_col(col) -> str:
+    return str(col).replace("\n", " ").replace("\r", " ").strip()
+
+
+def read_quant_table(file_path: str) -> pd.DataFrame:
+    """구버전(상단 안내문 2~3행) / 신버전 엑셀 모두 헤더 자동 탐지."""
+    if file_path.lower().endswith(".csv"):
+        try:
+            df = pd.read_csv(file_path, encoding="utf-8", low_memory=False)
+        except UnicodeDecodeError:
+            df = pd.read_csv(file_path, encoding="euc-kr", low_memory=False)
+        df.columns = [_norm_col(c) for c in df.columns]
+        return df
+
+    raw = pd.read_excel(file_path, header=None)
+    header_row = 0
+    for i in range(min(12, len(raw))):
+        row_txt = " ".join(_norm_col(v) for v in raw.iloc[i].tolist())
+        if "코드" in row_txt and ("회사" in row_txt or "시가총액" in row_txt or "PER" in row_txt):
+            header_row = i
+            break
+    df = pd.read_excel(file_path, header=header_row)
+    df.columns = [_norm_col(c) for c in df.columns]
+    # 완전 빈 열 제거
+    df = df.dropna(axis=1, how="all")
+    return df
+
+
+def map_factor_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """신·구 퀀트킹 컬럼명을 monthly_factor 표준명으로 매핑."""
+    # 우선순위 후보 (앞에 있을수록 선호) — 나중에 나온 동일 표준명은 덮어쓰지 않음
+    preferences = {
+        "ticker": ["코드", "코드 번호", "기업코드"],
+        "name": ["회사명", "회사이름", "회사명  (더블클릭시 요약정보)"],
+        "per": [
+            "PER", "발표 PER", "올해 PER", "선행 PER", "현재 PER",
+            "후행 PER", "1년후 PER", "과거 PER",
+        ],
+        "pbr": [
+            "PBR", "발표 PBR", "선행 PBR", "현재 PBR", "목표 PBR",
+            "1년후 PBR", "과거 PBR",
+        ],
+        "psr": ["PSR", "발표 PSR", "선행 PSR", "목표 PSR", "과거 PSR"],
+        "ev_ebitda": [
+            "EV /EBITDA", "EV/EBITDA", "과거 EV/EBITDA (%)",
+            "선행 EV/EBITDA (%)", "선행 EV/EBITDA",
+        ],
+        "roe": [
+            "ROE (%)", "과거 ROE (%)", "선행 ROE (%)", "ROE",
+            "1년후 ROE (%)", "1개월 ROE (%)",
+        ],
+        "op_margin": [
+            "OPM (%)", "발표 OPM (%)", "올해 OPM (%)",
+            "선행 OPM (%)", "목표 OPM (%)", "OPM",
+        ],
+        "gross_margin": ["GPM (%)", "과거 GPM (%)", "선행 GPM (%)", "GPM"],
+        "debt_ratio": [
+            "부채 비율 (%)", "연결 부채비율 (%)", "단순 부채비율 (%)", "부채비율",
+        ],
+        "f_score": ["F스코어 점수 (9점만점)", "F-Score", "F스코어"],
+        "mom_1m": ["1개월 등락률 (%)", "1개월 등락율 (%)"],
+        "mom_6m": ["6개월 등락률 (%)", "6개월 등락율 (%)"],
+        "mom_12m": ["1년 등락률 (%)", "1년 등락율 (%)"],
+    }
+
+    cols = list(df.columns)
+    rename = {}
+    used_src = set()
+
+    for std, cands in preferences.items():
+        # 1) 정확 일치
+        for cand in cands:
+            if cand in cols and cand not in used_src:
+                rename[cand] = std
+                used_src.add(cand)
+                break
+        if std in rename.values():
+            continue
+        # 2) 느슨한 매칭
+        for col in cols:
+            if col in used_src:
+                continue
+            if std == "ticker" and (col.startswith("코드") or "기업코드" in col):
+                rename[col] = std
+                used_src.add(col)
+                break
+            if std == "name" and ("회사명" in col or "회사이름" in col):
+                rename[col] = std
+                used_src.add(col)
+                break
+            if std == "f_score" and ("F스코어 점수" in col or "F-Score" in col):
+                rename[col] = std
+                used_src.add(col)
+                break
+
+    # PER=... 형태 (신버전)
+    for col in cols:
+        if col in used_src:
+            continue
+        if col.startswith("PER=") and "per" not in rename.values():
+            rename[col] = "per"
+            used_src.add(col)
+        elif col.startswith("PBR=") and "pbr" not in rename.values():
+            rename[col] = "pbr"
+            used_src.add(col)
+        elif col.startswith("PSR=") and "psr" not in rename.values():
+            rename[col] = "psr"
+            used_src.add(col)
+        elif col.startswith("ROE=") and "roe" not in rename.values():
+            rename[col] = "roe"
+            used_src.add(col)
+        elif col.startswith("OPM=") and "op_margin" not in rename.values():
+            rename[col] = "op_margin"
+            used_src.add(col)
+        elif col.startswith("GPM=") and "gross_margin" not in rename.values():
+            rename[col] = "gross_margin"
+            used_src.add(col)
+        elif col.startswith("부채비율=") and "debt_ratio" not in rename.values():
+            rename[col] = "debt_ratio"
+            used_src.add(col)
+        elif col.startswith("EV/EBITDA=") and "ev_ebitda" not in rename.values():
+            rename[col] = "ev_ebitda"
+            used_src.add(col)
+
+    out = df.rename(columns=rename)
+    return out
+
+
 def process_raw_data(skip_existing_months: bool = False, only_recent_files: int = 0):
     """
     skip_existing_months: DB에 이미 있는 YYYY-MM 은 스킵 (일일 자동화용)
@@ -101,14 +253,7 @@ def process_raw_data(skip_existing_months: bool = False, only_recent_files: int 
 
     for file_path in data_files:
         filename = os.path.basename(file_path)
-        
-        # 파일명에서 년월(YYYY-MM) 자동 추출 (예: 퀀트데이터2025.10.01 -> 2025-10)
-        date_match = re.search(r'20\d{2}\.\d{2}\.\d{2}', filename)
-        if date_match:
-            target_month = date_match.group(0)[:7].replace('.', '-')
-        else:
-            # 서버 저장명(1681...xlsx)은 본문 날짜가 없으므로 mtime 기준 월 사용
-            target_month = time.strftime("%Y-%m", time.localtime(os.path.getmtime(file_path)))
+        target_month = extract_target_month(filename, file_path)
             
         if skip_existing_months and target_month in existing_months:
             print(f"⏭️  [{target_month}] 이미 DB에 있음 → 스킵: {filename[:30]}")
@@ -117,69 +262,32 @@ def process_raw_data(skip_existing_months: bool = False, only_recent_files: int 
         print(f"🔄 [{target_month}] 파일 변환 및 적재 중: {filename[:30]}...")
             
         try:
-            if file_path.endswith('.csv'):
-                try:
-                    df = pd.read_csv(file_path, encoding='utf-8', low_memory=False)
-                except UnicodeDecodeError:
-                    df = pd.read_csv(file_path, encoding='euc-kr', low_memory=False)
-            else:
-                df = pd.read_excel(file_path)
+            df = read_quant_table(file_path)
+            df = map_factor_columns(df)
         except Exception as e:
             print(f"  ❌ 파일 읽기 에러: {e}")
             continue
-
-        # Column Mapping (엄격한 기준 및 구버전 긴 컬럼명 지원)
-        mapped_columns = {}
-        for col in df.columns:
-            col_str = str(col).strip()
-            if col_str == '코드' or '기업코드' in col_str:
-                mapped_columns[col] = 'ticker'
-            elif col_str == '회사명' or '회사이름' in col_str or '회사명  (더블클릭시 요약정보)' in col_str:
-                mapped_columns[col] = 'name'
-            elif col_str == 'PER' or col_str.startswith('PER='):
-                mapped_columns[col] = 'per'
-            elif col_str == 'PBR' or col_str.startswith('PBR='):
-                mapped_columns[col] = 'pbr'
-            elif col_str == 'PSR' or col_str.startswith('PSR='):
-                mapped_columns[col] = 'psr'
-            elif col_str == 'EV /EBITDA' or col_str.startswith('EV/EBITDA='):
-                mapped_columns[col] = 'ev_ebitda'
-            elif col_str == 'ROE (%)' or col_str.startswith('ROE='):
-                mapped_columns[col] = 'roe'
-            elif col_str == 'OPM (%)' or col_str.startswith('OPM='):
-                mapped_columns[col] = 'op_margin'
-            elif col_str == 'GPM (%)' or col_str.startswith('GPM='):
-                mapped_columns[col] = 'gross_margin'
-            elif col_str == '부채 비율 (%)' or col_str.startswith('부채비율='):
-                mapped_columns[col] = 'debt_ratio'
-            elif col_str == 'F스코어 점수 (9점만점)' or '포인트점수키' in col_str or 'F-Score' in col_str:
-                mapped_columns[col] = 'f_score'
-            elif col_str == '1개월 등락률 (%)' or '1개월전 수정주가' in col_str:
-                mapped_columns[col] = 'mom_1m'
-            elif col_str == '6개월 등락률 (%)' or '6개월전 수정주가' in col_str:
-                mapped_columns[col] = 'mom_6m'
-            elif col_str == '1년 등락률 (%)' or '1년전 수정주가' in col_str:
-                mapped_columns[col] = 'mom_12m'
-            else:
-                mapped_columns[col] = col
-                
-        df.rename(columns=mapped_columns, inplace=True)
         
         # 🚨 [시니어 최적화] "PerformanceWarning: DataFrame is highly fragmented" 경고 해결
-        # Pandas가 열(Column)을 여러 번 수정/추가하다가 내부 메모리 구조가 파편화되는 현상 방지
-        # 한 번 복사(copy)를 떠서 메모리를 연속적으로 깔끔하게 재배치해 줌
         df = df.copy()
         
         # Ticker 및 Date 포맷팅 (daily_price와 동일하게 A+6자리)
-        if 'ticker' in df.columns:
-            t = df['ticker'].astype(str).str.strip()
-        elif '코드' in df.columns:
-            t = df['코드'].astype(str).str.strip()
+        if "ticker" in df.columns:
+            t = df["ticker"].astype(str).str.strip()
         else:
-            print(f"  ⚠️ 티커 컬럼 없음 → 스킵: {filename[:40]}")
-            continue
-        digits = t.str.replace(r'^A', '', regex=True).str.replace(r'\D', '', regex=True).str.zfill(6).str[-6:]
-        df['ticker'] = 'A' + digits
+            # 최후: A###### 패턴 컬럼 자동 탐색
+            t = None
+            for col in df.columns:
+                sample = df[col].astype(str).head(20)
+                if sample.str.contains(r"^A?\d{6}$", regex=True, na=False).sum() >= 5:
+                    t = df[col].astype(str).str.strip()
+                    print(f"  ℹ️ 티커 컬럼 자동감지: {col}")
+                    break
+            if t is None:
+                print(f"  ⚠️ 티커 컬럼 없음 → 스킵: {filename[:40]}")
+                continue
+        digits = t.str.replace(r"^A", "", regex=True).str.replace(r"\D", "", regex=True).str.zfill(6).str[-6:]
+        df["ticker"] = "A" + digits
         df = df[df['ticker'].str.match(r'^A\d{6}$', na=False)].copy()
             
         df['date'] = target_month

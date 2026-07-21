@@ -304,8 +304,7 @@ if st.session_state.step1_unlocked:
                 if start_date > user_start:
                     st.warning(
                         f"⚠️ 월별 팩터 DB가 **{factor_start}**부터만 존재합니다. "
-                        f"요청하신 {invest_years}년 구간 대신 **{start_date.date()} ~ {max_date.date()}**로 백테스트를 실행합니다. "
-                        f"(현재 `quant_raw_data` 파일도 2023-04~2026-07만 확인됨 → 2019년치가 필요하면 크롤러로 추가 수집 후 ETL 재실행)"
+                        f"요청하신 {invest_years}년 구간 대신 **{start_date.date()} ~ {max_date.date()}**로 백테스트를 실행합니다."
                     )
                 available_dates = [d for d in all_dates if d >= start_date]
                 

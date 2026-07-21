@@ -15,6 +15,7 @@ import sqlite3
 import sys
 import time
 from datetime import datetime
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -83,31 +84,34 @@ def run_price_update(lookback_days: int = 14):
     update_prices_incremental(lookback_days=lookback_days)
 
 
+def run_self_factor_build(limit: Optional[int] = None, skip_dart: bool = False):
+    print("\n[2b/3] 자체 팩터 빌드 (DART + 주가)")
+    from factor_builder import build_monthly_factors
+
+    build_monthly_factors(limit=limit, skip_dart=skip_dart)
+
+
 def run_daily_pipeline(
     quant_pages: int = 2,
     price_lookback_days: int = 14,
     etl_recent_files: int = 40,
     skip_quantking: bool = False,
     skip_price: bool = False,
+    factor_mode: str = "both",
+    self_factor_limit: Optional[int] = None,
 ):
+    """
+    factor_mode:
+      - quantking: 퀀트킹 수집+ETL만
+      - self: DART+주가 자체 팩터만
+      - both: 둘 다 (전환기 권장)
+    """
     print("=" * 60)
     print(f"🤖 일일 데이터 파이프라인 | {datetime.now():%Y-%m-%d %H:%M:%S}")
+    print(f"   factor_mode={factor_mode}")
     print("=" * 60)
     t0 = time.time()
     errors = []
-
-    if not skip_quantking:
-        try:
-            run_quantking_fetch(pages=quant_pages)
-        except Exception as e:
-            errors.append(f"quantking: {e}")
-            print(f"🚨 퀀트킹 수집 실패 (이어서 진행): {e}")
-
-    try:
-        run_factor_etl(only_recent_files=etl_recent_files)
-    except Exception as e:
-        errors.append(f"etl: {e}")
-        print(f"🚨 ETL 실패: {e}")
 
     if not skip_price:
         try:
@@ -115,6 +119,24 @@ def run_daily_pipeline(
         except Exception as e:
             errors.append(f"price: {e}")
             print(f"🚨 주가 갱신 실패: {e}")
+
+    if factor_mode in ("quantking", "both") and not skip_quantking:
+        try:
+            run_quantking_fetch(pages=quant_pages)
+            run_factor_etl(only_recent_files=etl_recent_files)
+        except Exception as e:
+            errors.append(f"quantking: {e}")
+            print(f"🚨 퀀트킹 경로 실패 (이어서 진행): {e}")
+
+    if factor_mode in ("self", "both"):
+        try:
+            # CI/일일: 전체는 오래 걸리므로 기본은 모멘텀+캐시된 DART
+            # SELF_FACTOR_LIMIT 로 배치 분할 가능
+            skip_dart = os.getenv("SKIP_DART", "").lower() in ("1", "true", "yes")
+            run_self_factor_build(limit=self_factor_limit, skip_dart=skip_dart)
+        except Exception as e:
+            errors.append(f"self_factor: {e}")
+            print(f"🚨 자체 팩터 실패: {e}")
 
     _checkpoint_db()
     print("-" * 60)
@@ -131,9 +153,14 @@ if __name__ == "__main__":
     skip_px = os.getenv("SKIP_PRICE", "").lower() in ("1", "true", "yes")
     pages = int(os.getenv("QUANTKING_PAGES", "2"))
     lookback = int(os.getenv("PRICE_LOOKBACK_DAYS", "14"))
+    factor_mode = os.getenv("FACTOR_MODE", "both").lower()
+    limit_env = os.getenv("SELF_FACTOR_LIMIT", "").strip()
+    self_limit = int(limit_env) if limit_env.isdigit() else None
     run_daily_pipeline(
         quant_pages=pages,
         price_lookback_days=lookback,
         skip_quantking=skip_qk,
         skip_price=skip_px,
+        factor_mode=factor_mode,
+        self_factor_limit=self_limit,
     )
