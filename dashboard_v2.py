@@ -205,7 +205,8 @@ def calculate_rank(df):
         + df['우량점수'] * real_w_qual
         + df['모멘텀점수'] * real_w_mom
     ).round(2)
-    return df.sort_values(by='Total_Rank_Score', ascending=True).reset_index(drop=True)
+    # 화면·전략 모두 종합점수(높을수록 우위) 기준
+    return df.sort_values(by='종합점수', ascending=False).reset_index(drop=True)
 
 df_result = calculate_rank(df_main.copy())
 df_result.insert(0, '순위', df_result.index + 1)
@@ -233,7 +234,8 @@ if st.session_state.step1_unlocked:
         st.dataframe(show_df, width="stretch", hide_index=True)
         st.caption(
             "✔️ 가치/우량/모멘텀은 유니버스 상대점수(0~100). "
-            "**종합점수 = 가치×비중 + 우량×비중 + 모멘텀×비중** (사이드바 비중 직반영, 재랭킹 없음)."
+            "**종합점수 = 가치×비중 + 우량×비중 + 모멘텀×비중**. "
+            "표·순위는 **종합점수 높은 순**으로 정렬됩니다."
         )
 
         with st.expander("🔒 세부 재무·모멘텀 원천 지표 (유료 구독 예정)", expanded=False):
@@ -252,7 +254,7 @@ if st.session_state.step1_unlocked:
     st.divider()
     st.markdown("### 📈 Step 2: 실전 다이내믹 시계열 백테스터")
     st.info("💡 **알림**: 팩터는 월별 롤링 리밸런싱, **자산 평가는 매일 종가(일별 주가)**로 반영합니다. 적립금은 매월 첫 거래일에만 투입됩니다.")
-    st.caption("✔️ 투자 룰: 1~10위 매수 / 11~20위 유지 (최대 비중 15% 캡) / 21위 밖 전량 매도")
+    st.caption("✔️ 투자 룰(종합점수 순위): 1~10위 매수 / 11~20위 유지 (최대 비중 15% 캡) / 21위 밖 전량 매도")
     st.caption("💸 수수료 및 슬리피지: 매수 시 0.15%, 매도 시 0.30% (세금 포함) 적용")
     
     bc1, bc2, bc3 = st.columns(3)
@@ -291,9 +293,28 @@ if st.session_state.step1_unlocked:
                 mom_hist = df_history.groupby('date')['mom_1m'].rank(ascending=False) * f_mom1 + \
                            df_history.groupby('date')['mom_6m'].rank(ascending=False) * f_mom6 + \
                            df_history.groupby('date')['mom_12m'].rank(ascending=False) * f_mom12
-                
-                df_history['Total_Rank_Score'] = val_hist + qual_hist + mom_hist
-                df_history['Rank'] = df_history.groupby('date')['Total_Rank_Score'].rank(ascending=True, method='first')
+
+                # 월별 종합점수(0~100 가중합) → 높을수록 1위 (매수/유지/매도 기준)
+                df_history['_val'] = val_hist
+                df_history['_qual'] = qual_hist
+                df_history['_mom'] = mom_hist
+                df_history['가치점수'] = (
+                    1 - df_history.groupby('date')['_val'].rank(pct=True, ascending=True)
+                ) * 100
+                df_history['우량점수'] = (
+                    1 - df_history.groupby('date')['_qual'].rank(pct=True, ascending=True)
+                ) * 100
+                df_history['모멘텀점수'] = (
+                    1 - df_history.groupby('date')['_mom'].rank(pct=True, ascending=True)
+                ) * 100
+                df_history['종합점수'] = (
+                    df_history['가치점수'] * real_w_val
+                    + df_history['우량점수'] * real_w_qual
+                    + df_history['모멘텀점수'] * real_w_mom
+                )
+                df_history['Rank'] = df_history.groupby('date')['종합점수'].rank(
+                    ascending=False, method='first'
+                )
                 
                 # 일별 주가 시계열 슬라이싱 (팩터 시작월 이전은 리밸런싱 불가 → 자동 클램프)
                 all_dates = sorted(pd.to_datetime(df_price_all['date'].unique()))
@@ -458,12 +479,21 @@ if st.session_state.step1_unlocked:
                 
                 fig.update_layout(
                     height=420,
-                    margin=dict(l=20, r=20, t=30, b=20),
+                    margin=dict(l=60, r=20, t=30, b=20),
                     hovermode="x unified",
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+                    yaxis=dict(
+                        title="자산 (원)",
+                        tickformat=",.0f",
+                        separatethousands=True,
+                        exponentformat="none",
+                        showexponent="none",
+                    ),
                 )
+                # hover에도 원 단위 콤마 표기
+                fig.update_traces(hovertemplate="%{y:,.0f} 원<extra>%{fullData.name}</extra>")
                 st.plotly_chart(fig, width="stretch")
-                st.caption("✔️ 곡선은 **매일 종가 평가**, 종목 교체는 **매월 첫 거래일**에 수행됩니다.")
+                st.caption("✔️ 곡선은 **매일 종가 평가**, 종목 교체는 **매월 첫 거래일**에 수행됩니다. (세로축: 원)")
                 
                 rc1, rc2, rc3 = st.columns(3)
                 rc1.metric("최종 자산 (만원)", f"{final_val/10000:,.0f}")

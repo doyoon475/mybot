@@ -9,3 +9,5 @@ daily_price
 debug_html/
 
 data_cache/dart_cache/
+
+docs_cache/
