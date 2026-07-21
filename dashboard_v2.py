@@ -22,22 +22,91 @@ st.set_page_config(page_title="초고속 퀀트 대시보드", layout="wide")
 st.title("🧪 다이내믹 퀀트 랩 V2 (실전 백테스트 엔진)")
 st.caption("SQLite 고속 DB 기반 | 점진적 공개(Progressive Disclosure) UI 적용")
 
+# 직전 AI 매크로 비중 캐시(재시작/새로고침 후에도 유지)
+try:
+    from macro_ai_agent import (
+        load_ai_weights as _load_ai_macro_weights,
+        DEFAULT_SUB_VALUE as _DEF_SV,
+        DEFAULT_SUB_QUALITY as _DEF_SQ,
+        DEFAULT_SUB_MOMENTUM as _DEF_SM,
+    )
+    _cached_macro = _load_ai_macro_weights()
+except Exception:
+    _cached_macro = None
+    _DEF_SV = {"per": 30, "pbr": 30, "psr": 20, "ev": 20}
+    _DEF_SQ = {"roe": 40, "opm": 20, "gpm": 20, "fscore": 20}
+    _DEF_SM = {"price": 40, "earn": 35, "factor": 25, "mom1": 20, "mom6": 40, "mom12": 40}
+
+def _ai_sub(group: str, key: str, default: int) -> int:
+    if not _cached_macro:
+        return default
+    block = _cached_macro.get(group) or {}
+    try:
+        return int(block.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
 if 'step1_unlocked' not in st.session_state:
     st.session_state.step1_unlocked = False
 if 'step2_unlocked' not in st.session_state:
     st.session_state.step2_unlocked = False
 if 'w_val' not in st.session_state:
-    st.session_state.w_val = 40
+    st.session_state.w_val = int(_cached_macro['value']) if _cached_macro else 40
 if 'w_qual' not in st.session_state:
-    st.session_state.w_qual = 40
+    st.session_state.w_qual = int(_cached_macro['quality']) if _cached_macro else 40
 if 'w_mom' not in st.session_state:
-    st.session_state.w_mom = 20
+    st.session_state.w_mom = int(_cached_macro['momentum']) if _cached_macro else 20
 if 'ai_reason' not in st.session_state:
-    st.session_state.ai_reason = ""
+    st.session_state.ai_reason = (_cached_macro.get('reason') if _cached_macro else "") or ""
+
+# 세부 슬라이더 세션 키 (AI가 덮어쓸 수 있도록 key 고정)
+_SUB_DEFAULTS = {
+    "sub_per": _ai_sub("sub_value", "per", _DEF_SV["per"]),
+    "sub_pbr": _ai_sub("sub_value", "pbr", _DEF_SV["pbr"]),
+    "sub_psr": _ai_sub("sub_value", "psr", _DEF_SV["psr"]),
+    "sub_ev": _ai_sub("sub_value", "ev", _DEF_SV["ev"]),
+    "sub_roe": _ai_sub("sub_quality", "roe", _DEF_SQ["roe"]),
+    "sub_opm": _ai_sub("sub_quality", "opm", _DEF_SQ["opm"]),
+    "sub_gpm": _ai_sub("sub_quality", "gpm", _DEF_SQ["gpm"]),
+    "sub_fscore": _ai_sub("sub_quality", "fscore", _DEF_SQ["fscore"]),
+    "sub_price_mom": _ai_sub("sub_momentum", "price", _DEF_SM["price"]),
+    "sub_earn_mom": _ai_sub("sub_momentum", "earn", _DEF_SM["earn"]),
+    "sub_factor_mom": _ai_sub("sub_momentum", "factor", _DEF_SM["factor"]),
+    "sub_mom1": _ai_sub("sub_momentum", "mom1", _DEF_SM["mom1"]),
+    "sub_mom6": _ai_sub("sub_momentum", "mom6", _DEF_SM["mom6"]),
+    "sub_mom12": _ai_sub("sub_momentum", "mom12", _DEF_SM["mom12"]),
+}
+for _k, _v in _SUB_DEFAULTS.items():
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
 
 def reset_ui_state():
+    """하위 단계 unlock만 리셋. 매크로/세부 비중·ai_reason은 절대 건드리지 않음."""
     st.session_state.step1_unlocked = False
     st.session_state.step2_unlocked = False
+
+def apply_ai_weights_to_session(ai_weights: dict):
+    st.session_state.w_val = int(ai_weights.get("value", 34))
+    st.session_state.w_qual = int(ai_weights.get("quality", 33))
+    st.session_state.w_mom = int(ai_weights.get("momentum", 33))
+    st.session_state.ai_reason = str(ai_weights.get("reason") or "").strip()
+    sv = ai_weights.get("sub_value") or {}
+    sq = ai_weights.get("sub_quality") or {}
+    sm = ai_weights.get("sub_momentum") or {}
+    st.session_state.sub_per = int(sv.get("per", 30))
+    st.session_state.sub_pbr = int(sv.get("pbr", 30))
+    st.session_state.sub_psr = int(sv.get("psr", 20))
+    st.session_state.sub_ev = int(sv.get("ev", 20))
+    st.session_state.sub_roe = int(sq.get("roe", 40))
+    st.session_state.sub_opm = int(sq.get("opm", 20))
+    st.session_state.sub_gpm = int(sq.get("gpm", 20))
+    st.session_state.sub_fscore = int(sq.get("fscore", 20))
+    st.session_state.sub_price_mom = int(sm.get("price", 40))
+    st.session_state.sub_earn_mom = int(sm.get("earn", 35))
+    st.session_state.sub_factor_mom = int(sm.get("factor", 25))
+    st.session_state.sub_mom1 = int(sm.get("mom1", 20))
+    st.session_state.sub_mom6 = int(sm.get("mom6", 40))
+    st.session_state.sub_mom12 = int(sm.get("mom12", 40))
 
 # ==========================================
 # 2. 초고속 DB 로드 (캐시 만료 시간 1시간 설정)
@@ -45,11 +114,21 @@ def reset_ui_state():
 @st.cache_data(ttl=3600)
 def load_db_data():
     conn = sqlite3.connect('data_cache/quant_history.db')
-    
-    query_factor = """
+    # 스키마 보장
+    try:
+        from factor_builder import ensure_factor_columns
+        ensure_factor_columns(conn)
+        conn.commit()
+    except Exception:
+        pass
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(monthly_factor)")}
+    earn_sel = "f.earn_mom" if "earn_mom" in cols else "NULL AS earn_mom"
+    fm_sel = "f.factor_mom" if "factor_mom" in cols else "NULL AS factor_mom"
+    query_factor = f"""
         SELECT f.date, f.ticker, m.name as '종목명', m.sector as '섹터', 
                f.per, f.pbr, f.psr, f.ev_ebitda, f.roe, f.op_margin, f.gross_margin, 
-               f.f_score, f.mom_1m, f.mom_6m, f.mom_12m
+               f.f_score, f.mom_1m, f.mom_6m, f.mom_12m, {earn_sel}, {fm_sel}
         FROM monthly_factor f
         JOIN stock_master m ON f.ticker = m.ticker
         WHERE m.is_active = 1
@@ -59,13 +138,35 @@ def load_db_data():
     # ETL로 들어온 헤더 잔여행/문자열 혼재를 숫자형으로 강제 정규화
     factor_cols = [
         'per', 'pbr', 'psr', 'ev_ebitda', 'roe', 'op_margin', 'gross_margin',
-        'f_score', 'mom_1m', 'mom_6m', 'mom_12m'
+        'f_score', 'mom_1m', 'mom_6m', 'mom_12m', 'earn_mom', 'factor_mom'
     ]
     for col in factor_cols:
         if col in df_factor.columns:
             df_factor[col] = pd.to_numeric(df_factor[col], errors='coerce')
-    # 결측을 0으로 채우지 않음 — 0은 PER/PBR에서 최우량으로 오인됨
-    # (랭킹은 na_option='bottom'으로 결측을 최하위로 보냄)
+
+    # 가치 멀티플: 0 이하는 결측 처리 (낮을수록 좋음 랭크에서 0=1등 버그 방지)
+    for col in ("per", "pbr", "psr", "ev_ebitda"):
+        if col in df_factor.columns:
+            df_factor.loc[df_factor[col] <= 0, col] = np.nan
+
+    # 모멘텀 이상치: -100% 고정값·전구간 0 은 데이터 결함으로 간주
+    for col in ("mom_1m", "mom_6m", "mom_12m"):
+        if col in df_factor.columns:
+            df_factor.loc[df_factor[col] <= -99.9, col] = np.nan
+    if {"mom_1m", "mom_6m", "mom_12m"}.issubset(df_factor.columns):
+        all_zero = (
+            (df_factor["mom_1m"].fillna(0) == 0)
+            & (df_factor["mom_6m"].fillna(0) == 0)
+            & (df_factor["mom_12m"].isna() | (df_factor["mom_12m"].fillna(0) == 0))
+        )
+        # per/pbr/psr도 전부 결측인 행의 0 모멘텀은 신뢰하지 않음
+        val_missing = (
+            df_factor["per"].isna() & df_factor["pbr"].isna() & df_factor["psr"].isna()
+        )
+        bad_mom = all_zero & val_missing
+        for col in ("mom_1m", "mom_6m", "mom_12m"):
+            df_factor.loc[bad_mom, col] = np.nan
+
     # 티커 표준화: '005930' / 'A005930' → 'A005930' (daily_price와 조인 정합)
     def _norm_ticker(x):
         s = str(x).strip()
@@ -76,6 +177,20 @@ def load_db_data():
 
     df_factor['ticker'] = df_factor['ticker'].map(_norm_ticker)
     df_factor = df_factor[df_factor['ticker'].astype(str).str.match(r'^A\d{6}$', na=False)].copy()
+
+    # factor_mom: DB 값이 충분하면 재계산 생략(캐시/속도). 부족하면 런타임 산출
+    need_fm = (
+        "factor_mom" not in df_factor.columns
+        or df_factor["factor_mom"].notna().mean() < 0.5
+    )
+    if need_fm:
+        try:
+            from momentum_engine import attach_factor_momentum
+            df_factor = attach_factor_momentum(df_factor, lookback=6)
+        except Exception as e:
+            if "factor_mom" not in df_factor.columns:
+                df_factor["factor_mom"] = np.nan
+            print(f"[warn] factor_mom 산출 실패: {e}")
     
     query_price = "SELECT date, ticker, close FROM daily_price"
     try:
@@ -123,16 +238,18 @@ st.sidebar.caption(
     f"✅ DB 최종 갱신일: {db_date} (상세 보기 Hover)", 
     help="매월 1일 GitHub Actions를 통해 최신 공시 및 주가 데이터가 자동 동기화됩니다."
 )
+if st.sidebar.button("🔄 데이터 캐시 새로고침", use_container_width=True):
+    st.cache_data.clear()
+    st.rerun()
 st.sidebar.markdown("### 🎛️ 나만의 팩터 설계소")
 
 if st.sidebar.button("🤖 AI 매크로 비중 자동 할당", type="primary", use_container_width=True):
-    with st.spinner("글로벌 매크로 분석 및 비중 계산 중... (약 10~20초 소요)"):
-        from macro_ai_agent import get_monthly_factor_weights
-        ai_weights = get_monthly_factor_weights()
-        st.session_state.w_val = ai_weights.get('value', 34)
-        st.session_state.w_qual = ai_weights.get('quality', 33)
-        st.session_state.w_mom = ai_weights.get('momentum', 33)
-        st.session_state.ai_reason = ai_weights.get('reason', '')
+    with st.spinner("Perplexity로 뉴스·공시·시황 분석 중... (약 10~20초)"):
+        import importlib
+        import macro_ai_agent
+        importlib.reload(macro_ai_agent)
+        ai_weights = macro_ai_agent.get_monthly_factor_weights(force_refresh=True)
+        apply_ai_weights_to_session(ai_weights)
         reset_ui_state()
         st.rerun()
 
@@ -141,7 +258,8 @@ w_quality = st.sidebar.slider("우량 (Quality)", 0, 100, key='w_qual', on_chang
 w_momentum = st.sidebar.slider("모멘텀 (Momentum)", 0, 100, key='w_mom', on_change=reset_ui_state)
 
 if st.session_state.ai_reason:
-    st.sidebar.markdown("💡 **AI 팩터 분석 완료 (상세 보기 Hover)**", help=st.session_state.ai_reason)
+    st.sidebar.success("💡 AI 매크로 비중 근거 (Perplexity)")
+    st.sidebar.caption(st.session_state.ai_reason)
 
 total_macro = w_value + w_quality + w_momentum
 if total_macro > 0:
@@ -150,30 +268,45 @@ else:
     real_w_val = real_w_qual = real_w_mom = 0
 
 with st.sidebar.expander("🔽 가치(Value) 세부 비중", expanded=False):
-    sub_per = st.slider("PER (순이익)", 0, 100, 30, on_change=reset_ui_state)
-    sub_pbr = st.slider("PBR (순자산)", 0, 100, 30, on_change=reset_ui_state)
-    sub_psr = st.slider("PSR (매출액)", 0, 100, 20, on_change=reset_ui_state)
-    sub_ev = st.slider("EV/EBITDA", 0, 100, 20, on_change=reset_ui_state)
+    sub_per = st.slider("PER (순이익)", 0, 100, key="sub_per", on_change=reset_ui_state)
+    sub_pbr = st.slider("PBR (순자산)", 0, 100, key="sub_pbr", on_change=reset_ui_state)
+    sub_psr = st.slider("PSR (매출액)", 0, 100, key="sub_psr", on_change=reset_ui_state)
+    sub_ev = st.slider("EV/EBITDA", 0, 100, key="sub_ev", on_change=reset_ui_state)
     
     tot_val_sub = sub_per + sub_pbr + sub_psr + sub_ev
     f_per, f_pbr, f_psr, f_ev = [x / tot_val_sub * real_w_val if tot_val_sub > 0 else 0 for x in (sub_per, sub_pbr, sub_psr, sub_ev)]
 
 with st.sidebar.expander("🔽 우량(Quality) 세부 비중", expanded=False):
-    sub_roe = st.slider("ROE (자본수익률)", 0, 100, 40, on_change=reset_ui_state)
-    sub_opm = st.slider("OPM (영업이익률)", 0, 100, 20, on_change=reset_ui_state)
-    sub_gpm = st.slider("GPM (매출총이익률)", 0, 100, 20, on_change=reset_ui_state)
-    sub_fscore = st.slider("F-Score (재무건전성)", 0, 100, 20, on_change=reset_ui_state)
+    sub_roe = st.slider("ROE (자본수익률)", 0, 100, key="sub_roe", on_change=reset_ui_state)
+    sub_opm = st.slider("OPM (영업이익률)", 0, 100, key="sub_opm", on_change=reset_ui_state)
+    sub_gpm = st.slider("GPM (매출총이익률)", 0, 100, key="sub_gpm", on_change=reset_ui_state)
+    sub_fscore = st.slider("F-Score (재무건전성)", 0, 100, key="sub_fscore", on_change=reset_ui_state)
     
     tot_qual_sub = sub_roe + sub_opm + sub_gpm + sub_fscore
     f_roe, f_opm, f_gpm, f_fscore = [x / tot_qual_sub * real_w_qual if tot_qual_sub > 0 else 0 for x in (sub_roe, sub_opm, sub_gpm, sub_fscore)]
 
 with st.sidebar.expander("🔽 모멘텀(Momentum) 세부 비중", expanded=False):
-    sub_mom1 = st.slider("1개월 등락률", 0, 100, 20, on_change=reset_ui_state)
-    sub_mom6 = st.slider("6개월 등락률", 0, 100, 40, on_change=reset_ui_state)
-    sub_mom12 = st.slider("12개월 등락률", 0, 100, 40, on_change=reset_ui_state)
-    
-    tot_mom_sub = sub_mom1 + sub_mom6 + sub_mom12
-    f_mom1, f_mom6, f_mom12 = [x / tot_mom_sub * real_w_mom if tot_mom_sub > 0 else 0 for x in (sub_mom1, sub_mom6, sub_mom12)]
+    st.caption("3축: 가격 · 이익 · 팩터 모멘텀")
+    sub_price_mom = st.slider("가격 모멘텀 (Price)", 0, 100, key="sub_price_mom", on_change=reset_ui_state)
+    sub_earn_mom = st.slider("이익 모멘텀 (Earnings)", 0, 100, key="sub_earn_mom", on_change=reset_ui_state)
+    sub_factor_mom = st.slider("팩터 모멘텀 (Factor)", 0, 100, key="sub_factor_mom", on_change=reset_ui_state)
+    tot_mom_pillar = sub_price_mom + sub_earn_mom + sub_factor_mom
+    w_price_p, w_earn_p, w_factor_p = [
+        x / tot_mom_pillar * real_w_mom if tot_mom_pillar > 0 else 0
+        for x in (sub_price_mom, sub_earn_mom, sub_factor_mom)
+    ]
+
+    st.caption("가격 모멘텀 Horizon")
+    sub_mom1 = st.slider("1개월 등락률", 0, 100, key="sub_mom1", on_change=reset_ui_state)
+    sub_mom6 = st.slider("6개월 등락률", 0, 100, key="sub_mom6", on_change=reset_ui_state)
+    sub_mom12 = st.slider("12개월 등락률", 0, 100, key="sub_mom12", on_change=reset_ui_state)
+    tot_mom_hz = sub_mom1 + sub_mom6 + sub_mom12
+    f_mom1, f_mom6, f_mom12 = [
+        x / tot_mom_hz * w_price_p if tot_mom_hz > 0 else 0
+        for x in (sub_mom1, sub_mom6, sub_mom12)
+    ]
+    f_earn_mom = w_earn_p
+    f_factor_mom = w_factor_p
 
 # ==========================================
 # 4. 랭킹 연산 엔진
@@ -202,10 +335,14 @@ def calculate_rank(df):
         + _wr(df["gross_margin"], False, f_gpm)
         + _wr(df["f_score"], False, f_fscore)
     )
+    earn_s = df["earn_mom"] if "earn_mom" in df.columns else pd.Series(np.nan, index=df.index)
+    factor_s = df["factor_mom"] if "factor_mom" in df.columns else pd.Series(np.nan, index=df.index)
     mom_rank = (
         _wr(df["mom_1m"], False, f_mom1)
         + _wr(df["mom_6m"], False, f_mom6)
         + _wr(df["mom_12m"], False, f_mom12)
+        + _wr(earn_s, False, f_earn_mom)
+        + _wr(factor_s, False, f_factor_mom)
     )
 
     # 내부 랭크합(낮을수록 우위) → 화면용 0~100점(높을수록 우위)
@@ -369,10 +506,12 @@ if st.session_state.step1_unlocked:
         with st.expander("🔒 세부 재무·모멘텀 원천 지표 (유료 구독 예정)", expanded=False):
             st.info("상세 원천 지표(PER/PBR/ROE 등)는 향후 유료 구독 티어에서 제공합니다. 현재는 미리보기용으로만 노출됩니다.")
             detail_cols = [
-                '순위', '종목명',
-                'per', 'pbr', 'psr', 'ev_ebitda',
-                'roe', 'op_margin', 'gross_margin', 'f_score',
-                'mom_1m', 'mom_6m', 'mom_12m'
+                c for c in [
+                    '순위', '종목명',
+                    'per', 'pbr', 'psr', 'ev_ebitda',
+                    'roe', 'op_margin', 'gross_margin', 'f_score',
+                    'mom_1m', 'mom_6m', 'mom_12m', 'earn_mom', 'factor_mom'
+                ] if c in df_result.columns
             ]
             detail_df = df_result.head(20)[detail_cols].copy()
             num_cols = [c for c in detail_cols if c not in ("순위", "종목명")]
@@ -432,6 +571,14 @@ if st.session_state.step1_unlocked:
                     df_history.groupby("date")["mom_1m"].rank(ascending=False, na_option="bottom") * f_mom1
                     + df_history.groupby("date")["mom_6m"].rank(ascending=False, na_option="bottom") * f_mom6
                     + df_history.groupby("date")["mom_12m"].rank(ascending=False, na_option="bottom") * f_mom12
+                    + (
+                        df_history.groupby("date")["earn_mom"].rank(ascending=False, na_option="bottom") * f_earn_mom
+                        if "earn_mom" in df_history.columns else 0
+                    )
+                    + (
+                        df_history.groupby("date")["factor_mom"].rank(ascending=False, na_option="bottom") * f_factor_mom
+                        if "factor_mom" in df_history.columns else 0
+                    )
                 )
 
                 # 월별 종합점수(0~100 가중합) → 높을수록 1위 (매수/유지/매도 기준)

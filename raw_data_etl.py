@@ -122,10 +122,30 @@ def map_factor_columns(df: pd.DataFrame) -> pd.DataFrame:
         "debt_ratio": [
             "부채 비율 (%)", "연결 부채비율 (%)", "단순 부채비율 (%)", "부채비율",
         ],
-        "f_score": ["F스코어 점수 (9점만점)", "F-Score", "F스코어"],
-        "mom_1m": ["1개월 등락률 (%)", "1개월 등락율 (%)"],
-        "mom_6m": ["6개월 등락률 (%)", "6개월 등락율 (%)"],
-        "mom_12m": ["1년 등락률 (%)", "1년 등락율 (%)"],
+        "f_score": [
+            "F스코어 점수 (9점만점)", "F-Score", "F스코어",
+            "* 피오트로스키: F-Score라고 도함",
+        ],
+        "mom_1m": [
+            "1개월 등락률 (%)", "1개월 등락율 (%)",
+            "(현재가 - 1개월전 수정주가)*100/1개월전 수정주가",
+        ],
+        "mom_6m": [
+            "6개월 등락률 (%)", "6개월 등락율 (%)",
+            "(현재가 - 6개월전 수정주가)*100/6개월전 수정주가",
+        ],
+        "mom_12m": [
+            "1년 등락률 (%)", "1년 등락율 (%)",
+            "(현재가 - 1년전 수정주가)*100/1년전 수정주가",
+        ],
+        "earn_mom": [
+            "최근 연환산 영업이익의 전년동기대비 증가율",
+            "해당년도 영업이익의 전년동기대비 증가율",
+            "해당분기 영업이익의 전년동기대비 증가율",
+            "최근 연환산 지배순이익의 전년동기대비 증가율",
+            "해당분기 예상 영업이익의 전년동기대비 증가율",
+            "해당분기 예상 영업이익의 전년동기대비 증가율. 실적 발표시 발표치 반영됨.",
+        ],
     }
 
     cols = list(df.columns)
@@ -153,7 +173,31 @@ def map_factor_columns(df: pd.DataFrame) -> pd.DataFrame:
                 rename[col] = std
                 used_src.add(col)
                 break
-            if std == "f_score" and ("F스코어 점수" in col or "F-Score" in col):
+            if std == "f_score" and (
+                "F스코어 점수" in col
+                or "F-Score" in col
+                or "피오트로스키" in col
+            ):
+                rename[col] = std
+                used_src.add(col)
+                break
+            if std == "mom_1m" and "1개월전 수정주가" in col and "현재가" in col:
+                rename[col] = std
+                used_src.add(col)
+                break
+            if std == "mom_6m" and "6개월전 수정주가" in col and "현재가" in col:
+                rename[col] = std
+                used_src.add(col)
+                break
+            if std == "mom_12m" and "1년전 수정주가" in col and "현재가" in col:
+                rename[col] = std
+                used_src.add(col)
+                break
+            if std == "earn_mom" and (
+                ("영업이익" in col or "지배순이익" in col or "EPS" in col)
+                and "전년" in col
+                and "증가" in col
+            ):
                 rename[col] = std
                 used_src.add(col)
                 break
@@ -239,6 +283,14 @@ def process_raw_data(skip_existing_months: bool = False, only_recent_files: int 
     cursor.execute("PRAGMA journal_mode = WAL")  # MEMORY 대신 WAL 모드로 변경하여 동시성 개선
     cursor.execute("PRAGMA busy_timeout = 300000")
 
+    # earn_mom 컬럼 보장
+    try:
+        from factor_builder import ensure_factor_columns
+        ensure_factor_columns(conn)
+        conn.commit()
+    except Exception as e:
+        print(f"⚠️ 컬럼 마이그레이션 경고: {e}")
+
     existing_months = set()
     if skip_existing_months:
         try:
@@ -296,12 +348,19 @@ def process_raw_data(skip_existing_months: bool = False, only_recent_files: int 
         insert_cols = [
             "date", "ticker", "per", "pbr", "psr", "ev_ebitda", "roe", "op_margin",
             "gross_margin", "debt_ratio", "f_score", "mom_1m", "mom_6m", "mom_12m",
+            "earn_mom",
         ]
         for col in insert_cols:
             if col not in df.columns:
                 df[col] = float("nan")
             elif col not in ("date", "ticker"):
                 df[col] = pd.to_numeric(df[col], errors="coerce")
+                # 가치 멀티플 0 이하는 NULL (랭킹 왜곡 방지)
+                if col in ("per", "pbr", "psr", "ev_ebitda"):
+                    df.loc[df[col] <= 0, col] = float("nan")
+                if col in ("mom_1m", "mom_6m", "mom_12m"):
+                    df.loc[df[col] <= -99.9, col] = float("nan")
+
 
         # 문자열 컬럼만 빈문자, 팩터는 NaN 유지 → SQLite NULL
         if "name" in df.columns:
@@ -330,8 +389,9 @@ def process_raw_data(skip_existing_months: bool = False, only_recent_files: int 
                 conn.execute("BEGIN IMMEDIATE")
                 cursor.executemany('''
                     INSERT OR REPLACE INTO monthly_factor 
-                    (date, ticker, per, pbr, psr, ev_ebitda, roe, op_margin, gross_margin, debt_ratio, f_score, mom_1m, mom_6m, mom_12m)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (date, ticker, per, pbr, psr, ev_ebitda, roe, op_margin, gross_margin,
+                     debt_ratio, f_score, mom_1m, mom_6m, mom_12m, earn_mom)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', insert_data)
                 conn.commit()  # 매 파일마다 커밋하여 lock 방지
                 break # 성공 시 루프 탈출

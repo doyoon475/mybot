@@ -48,10 +48,35 @@ ACCOUNT_ALIASES = {
     "equity": ["자본총계"],
     "assets": ["자산총계"],
     "liabilities": ["부채총계"],
-    "gross_profit": ["매출총이익", "매출총이익(손실)", "매출 총이익"],
+    # gross_profit 등 나머지는 아래에서 병합
+    "gross_profit": [
+        "매출총이익",
+        "매출총이익(손실)",
+        "매출 총이익",
+        "영업총이익",
+        "매출총이익 금액",
+    ],
     "ebitda": ["EBITDA", "ebitda"],
     "cfo": ["영업활동현금흐름", "영업활동으로인한현금흐름", "영업활동으로 인한 현금흐름"],
 }
+
+
+def ensure_factor_columns(conn: Optional[sqlite3.Connection] = None) -> None:
+    """earn_mom 등 신규 컬럼을 기존 DB에 안전하게 추가."""
+    own = conn is None
+    if own:
+        conn = _connect()
+    try:
+        existing = {r[1] for r in conn.execute("PRAGMA table_info(monthly_factor)")}
+        for col, typ in (("earn_mom", "REAL"), ("factor_mom", "REAL")):
+            if col not in existing:
+                conn.execute(f"ALTER TABLE monthly_factor ADD COLUMN {col} {typ}")
+                print(f"  ➕ monthly_factor.{col} 컬럼 추가")
+        if own:
+            conn.commit()
+    finally:
+        if own:
+            conn.close()
 
 
 def _connect() -> sqlite3.Connection:
@@ -318,13 +343,20 @@ def compute_f_score(
             score += 1
     elif op is not None and op > 0:
         score += 1
-    # 3) 당기순이익 > 0
-    if ni is not None and ni > 0:
+    # 3) Accrual: CFO > NI (품질) — CFO 없으면 스킵
+    if cfo is not None and ni is not None and cfo > ni:
         score += 1
-    # 4) 매출총이익률 > 0
+    elif cfo is None and ni is not None and ni > 0:
+        # CFO 없을 때 당기순이익>0으로 약한 대체(기존 호환)
+        score += 1
+    # 4) 매출총이익률 > 0 (없으면 OPM>0 대체)
     gpm = safe_div(gp, rev)
     if gpm is not None and gpm > 0:
         score += 1
+    elif gpm is None:
+        opm = safe_div(op, rev)
+        if opm is not None and opm > 0:
+            score += 1
     # 5) 레버리지(부채/자산) 낮음 근사: < 0.7
     lev = safe_div(liab, assets)
     if lev is not None and lev < 0.7:
@@ -340,17 +372,22 @@ def compute_f_score(
         lev0 = safe_div(prev.get("liabilities"), prev.get("assets"))
         if lev is not None and lev0 is not None and lev < lev0:
             score += 1
-        # 8) GPM 개선
+        # 8) GPM 개선 (없으면 OPM 개선)
         gpm0 = safe_div(prev.get("gross_profit"), prev.get("revenue"))
         if gpm is not None and gpm0 is not None and gpm > gpm0:
             score += 1
+        else:
+            opm = safe_div(op, rev)
+            opm0 = safe_div(prev.get("op_income"), prev.get("revenue"))
+            if opm is not None and opm0 is not None and opm > opm0:
+                score += 1
         # 9) 자산회전율 개선 (매출/자산)
         at = safe_div(rev, assets)
         at0 = safe_div(prev.get("revenue"), prev.get("assets"))
         if at is not None and at0 is not None and at > at0:
             score += 1
 
-    return int(score)
+    return int(min(score, 9))
 
 
 def build_row(
@@ -361,6 +398,8 @@ def build_row(
     marcap: Optional[float],
     prev_fund: Optional[Dict[str, Optional[float]]] = None,
 ) -> Dict[str, Any]:
+    from momentum_engine import compute_earn_mom_from_fund
+
     ni = fund.get("net_income")
     eq = fund.get("equity")
     rev = fund.get("revenue")
@@ -383,9 +422,11 @@ def build_row(
 
     roe = safe_div(ni, eq) * 100.0 if (ni is not None and eq) else None
     op_margin = safe_div(op, rev) * 100.0 if (op is not None and rev) else None
+    # GPM: 매출총이익 우선, 없으면 None 유지(OPM으로 위장하지 않음)
     gross_margin = safe_div(gp, rev) * 100.0 if (gp is not None and rev) else None
     debt_ratio = safe_div(liab, eq) * 100.0 if (liab is not None and eq) else None
     f_score = compute_f_score(fund, prev_fund)
+    earn_mom = compute_earn_mom_from_fund(fund, prev_fund)
 
     return {
         "date": target_month,
@@ -402,6 +443,7 @@ def build_row(
         "mom_1m": mom.get("mom_1m"),
         "mom_6m": mom.get("mom_6m"),
         "mom_12m": mom.get("mom_12m"),
+        "earn_mom": earn_mom,
     }
 
 
@@ -410,6 +452,7 @@ def upsert_factors(rows: List[dict]):
         print("⚠️ 적재할 행 없음")
         return
     conn = _connect()
+    ensure_factor_columns(conn)
     cur = conn.cursor()
     data = [
         (
@@ -427,6 +470,7 @@ def upsert_factors(rows: List[dict]):
             r.get("mom_1m"),
             r.get("mom_6m"),
             r.get("mom_12m"),
+            r.get("earn_mom"),
         )
         for r in rows
     ]
@@ -434,8 +478,8 @@ def upsert_factors(rows: List[dict]):
         """
         INSERT OR REPLACE INTO monthly_factor
         (date, ticker, per, pbr, psr, ev_ebitda, roe, op_margin, gross_margin,
-         debt_ratio, f_score, mom_1m, mom_6m, mom_12m)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         debt_ratio, f_score, mom_1m, mom_6m, mom_12m, earn_mom)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         data,
     )
@@ -478,10 +522,11 @@ def build_monthly_factors(
 
     dart = None if skip_dart else _init_dart()
     year = int(target_month[:4])
-    # 연초면 전년 사업보고서가 더 안정적
-    fin_year = year - 1 if int(target_month[5:7]) <= 3 else year - 1
-    # 통상 직전 확정 연간: 작년
-    fin_year = datetime.now().year - 1
+    month = int(target_month[5:7])
+    # 대상월 기준 직전 확정 사업연도 (3월 이전은 Y-2가 더 안정적인 경우 있음)
+    fin_year = year - 2 if month <= 3 else year - 1
+
+    ensure_factor_columns(conn)
 
     rows = []
     ok_fund = 0

@@ -70,11 +70,21 @@ def create_quant_database():
         mom_1m REAL,
         mom_6m REAL,
         mom_12m REAL,
+        earn_mom REAL,              -- 이익 모멘텀(OP/NI YoY %)
+        factor_mom REAL,            -- 팩터 모멘텀(런타임 산출 가능)
         
         PRIMARY KEY (date, ticker),
         FOREIGN KEY (ticker) REFERENCES stock_master(ticker)
     )
     ''')
+    # 기존 DB 호환: 컬럼 누락 시 추가
+    existing = {r[1] for r in cursor.execute("PRAGMA table_info(monthly_factor)")}
+    for col, typ in (("earn_mom", "REAL"), ("factor_mom", "REAL"), ("gross_margin", "REAL"), ("f_score", "INTEGER")):
+        if col not in existing:
+            try:
+                cursor.execute(f"ALTER TABLE monthly_factor ADD COLUMN {col} {typ}")
+            except Exception:
+                pass
     # ⚡ [속도 최적화] 특정 연월(date)의 랭킹을 0.1초 만에 계산하기 위한 인덱스
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_monthly_factor_date ON monthly_factor(date)')
 
