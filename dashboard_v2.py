@@ -733,8 +733,8 @@ if st.session_state.get("show_monthly_report") and st.session_state.get("monthly
 # 5. 점진적 공개(Progressive Disclosure) UI
 # ==========================================
 
-# --- 제품 #5: 실시간 시장 국면 레이더 ---
-@st.cache_data(ttl=1800, show_spinner=False)
+# --- 제품 #5: 시장 국면 레이더 (FDR 일봉, 5분 캐시) ---
+@st.cache_data(ttl=300, show_spinner=False)
 def _cached_kospi_regime():
     from market_regime import compute_kospi_regime
     return compute_kospi_regime(60)
@@ -750,6 +750,7 @@ if _rg.get("ok"):
     _chg_color = "#3DDC97" if _chg >= 0 else "#FF6B6B"
     _dd_color = "#FF6B6B" if _dd < -5 else "#F0C674"
     _arrow = "↑" if _chg >= 0 else "↓"
+    _fetched = datetime.now().strftime("%H:%M")
     st.markdown(
         f"""
 <div style="
@@ -757,9 +758,9 @@ if _rg.get("ok"):
   border-radius: 16px; padding: 20px 22px 16px 22px; margin-bottom: 1rem;
   border: 1px solid rgba(255,255,255,0.06);">
   <div style="color:#fff;font-size:1.25rem;font-weight:700;margin-bottom:14px;">
-    📡 실시간 시장 국면 레이더
+    📡 시장 국면 레이더
     <span style="color:#888;font-size:0.75rem;font-weight:400;margin-left:8px;">
-      KOSPI · {_rg['asof']} 기준 (규칙 기반)
+      KOSPI 일봉 · 데이터일 {_rg['asof']} · 화면갱신 {_fetched} (약 5분 캐시 · 호가 실시간 아님)
     </span>
   </div>
   <div style="display:flex;gap:12px;flex-wrap:wrap;">
