@@ -49,6 +49,8 @@ jobs:
           python daily_updater.py
           # 전체 종목 DART (캐시 있으면 빠름)
           python factor_builder.py --sleep 1.0
+          # Phase C8: 월별 상장주식수 스냅샷 (FDR)
+          python shares_snapshot.py --fdr-current --fill-share-growth
 
       - name: Upload DB
         if: success()

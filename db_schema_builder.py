@@ -97,9 +97,26 @@ def create_quant_database():
     # ⚡ [속도 최적화] 특정 연월(date)의 랭킹을 0.1초 만에 계산하기 위한 인덱스
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_monthly_factor_date ON monthly_factor(date)')
 
+    # ---------------------------------------------------------
+    # 4. 월별 상장주식수/시총 스냅샷 (Phase C8 — QuantKing 독립)
+    # ---------------------------------------------------------
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS monthly_shares (
+        date TEXT NOT NULL,         -- YYYY-MM
+        ticker TEXT NOT NULL,
+        stocks REAL,                -- 상장주식수 (주)
+        marcap REAL,                -- 시가총액 (원)
+        close REAL,                 -- 월말 종가 (원)
+        source TEXT,                -- quantking | fdr
+        PRIMARY KEY (date, ticker),
+        FOREIGN KEY (ticker) REFERENCES stock_master(ticker)
+    )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_monthly_shares_date ON monthly_shares(date)')
+
     conn.commit()
     conn.close()
-    print("✅ [성공] 'quant_history.db' 내 핵심 테이블(Master, Price, Factor) 및 인덱스 생성이 완료되었습니다.")
+    print("✅ [성공] 'quant_history.db' 내 핵심 테이블(Master, Price, Factor, Shares) 및 인덱스 생성이 완료되었습니다.")
 
 if __name__ == "__main__":
     create_quant_database()
