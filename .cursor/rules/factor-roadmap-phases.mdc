@@ -26,4 +26,5 @@ alwaysApply: true
 - 한 세션에 **Phase 전체를 억지로 몰아넣지 말 것**. A1→A2→A3… 단위로 커밋.
 - AI 매크로(`macro_ai_agent`) `sub_value` / `sub_quality` 키를 새 팩터에 맞춰 확장.
 - 가치 멀티플 `≤0`, 모멘텀 `≤-99.9` 는 결측 처리(기존 규칙 유지).
-- 현재 진행: **Phase A1–A2 구현 중/직후**.
+- **완료:** Phase A1 `vol_12m`, A2 `per_sec`/`pbr_sec` (런타임, `factor_extras.py`).
+- **다음:** Phase A3 accrual → A4 fcf_yield.

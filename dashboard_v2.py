@@ -33,8 +33,8 @@ try:
     _cached_macro = _load_ai_macro_weights()
 except Exception:
     _cached_macro = None
-    _DEF_SV = {"per": 30, "pbr": 30, "psr": 20, "ev": 20}
-    _DEF_SQ = {"roe": 40, "opm": 20, "gpm": 20, "fscore": 20}
+    _DEF_SV = {"per": 25, "pbr": 25, "psr": 15, "ev": 15, "per_sec": 10, "pbr_sec": 10}
+    _DEF_SQ = {"roe": 30, "opm": 15, "gpm": 15, "fscore": 15, "vol": 25}
     _DEF_SM = {"price": 40, "earn": 35, "factor": 25, "mom1": 20, "mom6": 40, "mom12": 40}
 
 def _ai_sub(group: str, key: str, default: int) -> int:
@@ -65,10 +65,13 @@ _SUB_DEFAULTS = {
     "sub_pbr": _ai_sub("sub_value", "pbr", _DEF_SV["pbr"]),
     "sub_psr": _ai_sub("sub_value", "psr", _DEF_SV["psr"]),
     "sub_ev": _ai_sub("sub_value", "ev", _DEF_SV["ev"]),
+    "sub_per_sec": _ai_sub("sub_value", "per_sec", _DEF_SV.get("per_sec", 10)),
+    "sub_pbr_sec": _ai_sub("sub_value", "pbr_sec", _DEF_SV.get("pbr_sec", 10)),
     "sub_roe": _ai_sub("sub_quality", "roe", _DEF_SQ["roe"]),
     "sub_opm": _ai_sub("sub_quality", "opm", _DEF_SQ["opm"]),
     "sub_gpm": _ai_sub("sub_quality", "gpm", _DEF_SQ["gpm"]),
     "sub_fscore": _ai_sub("sub_quality", "fscore", _DEF_SQ["fscore"]),
+    "sub_vol": _ai_sub("sub_quality", "vol", _DEF_SQ.get("vol", 25)),
     "sub_price_mom": _ai_sub("sub_momentum", "price", _DEF_SM["price"]),
     "sub_earn_mom": _ai_sub("sub_momentum", "earn", _DEF_SM["earn"]),
     "sub_factor_mom": _ai_sub("sub_momentum", "factor", _DEF_SM["factor"]),
@@ -93,14 +96,17 @@ def apply_ai_weights_to_session(ai_weights: dict):
     sv = ai_weights.get("sub_value") or {}
     sq = ai_weights.get("sub_quality") or {}
     sm = ai_weights.get("sub_momentum") or {}
-    st.session_state.sub_per = int(sv.get("per", 30))
-    st.session_state.sub_pbr = int(sv.get("pbr", 30))
-    st.session_state.sub_psr = int(sv.get("psr", 20))
-    st.session_state.sub_ev = int(sv.get("ev", 20))
-    st.session_state.sub_roe = int(sq.get("roe", 40))
-    st.session_state.sub_opm = int(sq.get("opm", 20))
-    st.session_state.sub_gpm = int(sq.get("gpm", 20))
-    st.session_state.sub_fscore = int(sq.get("fscore", 20))
+    st.session_state.sub_per = int(sv.get("per", 25))
+    st.session_state.sub_pbr = int(sv.get("pbr", 25))
+    st.session_state.sub_psr = int(sv.get("psr", 15))
+    st.session_state.sub_ev = int(sv.get("ev", 15))
+    st.session_state.sub_per_sec = int(sv.get("per_sec", 10))
+    st.session_state.sub_pbr_sec = int(sv.get("pbr_sec", 10))
+    st.session_state.sub_roe = int(sq.get("roe", 30))
+    st.session_state.sub_opm = int(sq.get("opm", 15))
+    st.session_state.sub_gpm = int(sq.get("gpm", 15))
+    st.session_state.sub_fscore = int(sq.get("fscore", 15))
+    st.session_state.sub_vol = int(sq.get("vol", 25))
     st.session_state.sub_price_mom = int(sm.get("price", 40))
     st.session_state.sub_earn_mom = int(sm.get("earn", 35))
     st.session_state.sub_factor_mom = int(sm.get("factor", 25))
@@ -205,6 +211,17 @@ def load_db_data():
             df_price = pd.DataFrame()
     except Exception:
         df_price = pd.DataFrame()
+
+    # Phase A1–A2: 저변동 + 섹터 상대 가치
+    try:
+        from factor_extras import attach_sector_relative, attach_vol_12m
+        df_factor = attach_sector_relative(df_factor)
+        df_factor = attach_vol_12m(df_factor, df_price)
+    except Exception as e:
+        df_factor["per_sec"] = np.nan
+        df_factor["pbr_sec"] = np.nan
+        df_factor["vol_12m"] = np.nan
+        print(f"[warn] Phase A extras 실패: {e}")
         
     conn.close()
     return df_factor, df_price
@@ -272,18 +289,27 @@ with st.sidebar.expander("🔽 가치(Value) 세부 비중", expanded=False):
     sub_pbr = st.slider("PBR (순자산)", 0, 100, key="sub_pbr", on_change=reset_ui_state)
     sub_psr = st.slider("PSR (매출액)", 0, 100, key="sub_psr", on_change=reset_ui_state)
     sub_ev = st.slider("EV/EBITDA", 0, 100, key="sub_ev", on_change=reset_ui_state)
+    sub_per_sec = st.slider("PER 섹터상대 (z)", 0, 100, key="sub_per_sec", on_change=reset_ui_state)
+    sub_pbr_sec = st.slider("PBR 섹터상대 (z)", 0, 100, key="sub_pbr_sec", on_change=reset_ui_state)
     
-    tot_val_sub = sub_per + sub_pbr + sub_psr + sub_ev
-    f_per, f_pbr, f_psr, f_ev = [x / tot_val_sub * real_w_val if tot_val_sub > 0 else 0 for x in (sub_per, sub_pbr, sub_psr, sub_ev)]
+    tot_val_sub = sub_per + sub_pbr + sub_psr + sub_ev + sub_per_sec + sub_pbr_sec
+    f_per, f_pbr, f_psr, f_ev, f_per_sec, f_pbr_sec = [
+        x / tot_val_sub * real_w_val if tot_val_sub > 0 else 0
+        for x in (sub_per, sub_pbr, sub_psr, sub_ev, sub_per_sec, sub_pbr_sec)
+    ]
 
 with st.sidebar.expander("🔽 우량(Quality) 세부 비중", expanded=False):
     sub_roe = st.slider("ROE (자본수익률)", 0, 100, key="sub_roe", on_change=reset_ui_state)
     sub_opm = st.slider("OPM (영업이익률)", 0, 100, key="sub_opm", on_change=reset_ui_state)
     sub_gpm = st.slider("GPM (매출총이익률)", 0, 100, key="sub_gpm", on_change=reset_ui_state)
     sub_fscore = st.slider("F-Score (재무건전성)", 0, 100, key="sub_fscore", on_change=reset_ui_state)
+    sub_vol = st.slider("저변동 vol_12m (낮을수록↑)", 0, 100, key="sub_vol", on_change=reset_ui_state)
     
-    tot_qual_sub = sub_roe + sub_opm + sub_gpm + sub_fscore
-    f_roe, f_opm, f_gpm, f_fscore = [x / tot_qual_sub * real_w_qual if tot_qual_sub > 0 else 0 for x in (sub_roe, sub_opm, sub_gpm, sub_fscore)]
+    tot_qual_sub = sub_roe + sub_opm + sub_gpm + sub_fscore + sub_vol
+    f_roe, f_opm, f_gpm, f_fscore, f_vol = [
+        x / tot_qual_sub * real_w_qual if tot_qual_sub > 0 else 0
+        for x in (sub_roe, sub_opm, sub_gpm, sub_fscore, sub_vol)
+    ]
 
 with st.sidebar.expander("🔽 모멘텀(Momentum) 세부 비중", expanded=False):
     st.caption("3축: 가격 · 이익 · 팩터 모멘텀")
@@ -328,12 +354,15 @@ def calculate_rank(df):
         + _wr(df["pbr"], True, f_pbr)
         + _wr(df["psr"], True, f_psr)
         + _wr(df["ev_ebitda"], True, f_ev)
+        + _wr(df["per_sec"] if "per_sec" in df.columns else pd.Series(np.nan, index=df.index), True, f_per_sec)
+        + _wr(df["pbr_sec"] if "pbr_sec" in df.columns else pd.Series(np.nan, index=df.index), True, f_pbr_sec)
     )
     qual_rank = (
         _wr(df["roe"], False, f_roe)
         + _wr(df["op_margin"], False, f_opm)
         + _wr(df["gross_margin"], False, f_gpm)
         + _wr(df["f_score"], False, f_fscore)
+        + _wr(df["vol_12m"] if "vol_12m" in df.columns else pd.Series(np.nan, index=df.index), True, f_vol)
     )
     earn_s = df["earn_mom"] if "earn_mom" in df.columns else pd.Series(np.nan, index=df.index)
     factor_s = df["factor_mom"] if "factor_mom" in df.columns else pd.Series(np.nan, index=df.index)
@@ -508,8 +537,8 @@ if st.session_state.step1_unlocked:
             detail_cols = [
                 c for c in [
                     '순위', '종목명',
-                    'per', 'pbr', 'psr', 'ev_ebitda',
-                    'roe', 'op_margin', 'gross_margin', 'f_score',
+                    'per', 'pbr', 'psr', 'ev_ebitda', 'per_sec', 'pbr_sec',
+                    'roe', 'op_margin', 'gross_margin', 'f_score', 'vol_12m',
                     'mom_1m', 'mom_6m', 'mom_12m', 'earn_mom', 'factor_mom'
                 ] if c in df_result.columns
             ]
@@ -560,12 +589,24 @@ if st.session_state.step1_unlocked:
                     + df_history.groupby("date")["pbr"].rank(ascending=True, na_option="bottom") * f_pbr
                     + df_history.groupby("date")["psr"].rank(ascending=True, na_option="bottom") * f_psr
                     + df_history.groupby("date")["ev_ebitda"].rank(ascending=True, na_option="bottom") * f_ev
+                    + (
+                        df_history.groupby("date")["per_sec"].rank(ascending=True, na_option="bottom") * f_per_sec
+                        if "per_sec" in df_history.columns else 0
+                    )
+                    + (
+                        df_history.groupby("date")["pbr_sec"].rank(ascending=True, na_option="bottom") * f_pbr_sec
+                        if "pbr_sec" in df_history.columns else 0
+                    )
                 )
                 qual_hist = (
                     df_history.groupby("date")["roe"].rank(ascending=False, na_option="bottom") * f_roe
                     + df_history.groupby("date")["op_margin"].rank(ascending=False, na_option="bottom") * f_opm
                     + df_history.groupby("date")["gross_margin"].rank(ascending=False, na_option="bottom") * f_gpm
                     + df_history.groupby("date")["f_score"].rank(ascending=False, na_option="bottom") * f_fscore
+                    + (
+                        df_history.groupby("date")["vol_12m"].rank(ascending=True, na_option="bottom") * f_vol
+                        if "vol_12m" in df_history.columns else 0
+                    )
                 )
                 mom_hist = (
                     df_history.groupby("date")["mom_1m"].rank(ascending=False, na_option="bottom") * f_mom1

@@ -20,8 +20,8 @@ load_dotenv()
 CACHE_PATH = Path("data_cache/ai_macro_weights.json")
 PERPLEXITY_URL = "https://api.perplexity.ai/chat/completions"
 
-DEFAULT_SUB_VALUE = {"per": 30, "pbr": 30, "psr": 20, "ev": 20}
-DEFAULT_SUB_QUALITY = {"roe": 40, "opm": 20, "gpm": 20, "fscore": 20}
+DEFAULT_SUB_VALUE = {"per": 25, "pbr": 25, "psr": 15, "ev": 15, "per_sec": 10, "pbr_sec": 10}
+DEFAULT_SUB_QUALITY = {"roe": 30, "opm": 15, "gpm": 15, "fscore": 15, "vol": 25}
 DEFAULT_SUB_MOMENTUM = {
     "price": 40,
     "earn": 35,
@@ -181,8 +181,8 @@ def _call_perplexity() -> dict[str, Any] | None:
   "value": <0-100>,
   "quality": <0-100>,
   "momentum": <0-100>,
-  "sub_value": {{"per":0-100, "pbr":0-100, "psr":0-100, "ev":0-100}},
-  "sub_quality": {{"roe":0-100, "opm":0-100, "gpm":0-100, "fscore":0-100}},
+  "sub_value": {{"per":0-100, "pbr":0-100, "psr":0-100, "ev":0-100, "per_sec":0-100, "pbr_sec":0-100}},
+  "sub_quality": {{"roe":0-100, "opm":0-100, "gpm":0-100, "fscore":0-100, "vol":0-100}},
   "sub_momentum": {{
     "price":0-100, "earn":0-100, "factor":0-100,
     "mom1":0-100, "mom6":0-100, "mom12":0-100
@@ -243,8 +243,8 @@ def _call_gemini() -> dict[str, Any] | None:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     prompt = (
         "한국 주식 퀀트 매크로+세부 비중 JSON만 출력. "
-        'keys: value,quality,momentum,sub_value{per,pbr,psr,ev},'
-        "sub_quality{roe,opm,gpm,fscore},"
+        'keys: value,quality,momentum,sub_value{per,pbr,psr,ev,per_sec,pbr_sec},'
+        "sub_quality{roe,opm,gpm,fscore,vol},"
         "sub_momentum{price,earn,factor,mom1,mom6,mom12},reason. "
         "각 그룹 합 100. reason 한국어 2~4문장."
     )
