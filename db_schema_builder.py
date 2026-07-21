@@ -67,6 +67,8 @@ def create_quant_database():
         fcf_yield REAL,
         div_yield REAL,             -- 시가배당률/연간배당률 (%)
         share_growth REAL,          -- 주식수 증가율(%). 높을수록 희석
+        treasury_pct REAL,          -- 자사주 비중 (%)
+        treasury_chg REAL,          -- 자사주 비중 YoY 변화(pp). 높을수록 매입
         
         -- 모멘텀(Momentum) 팩터
         mom_1m REAL,
@@ -85,7 +87,7 @@ def create_quant_database():
     ''')
     # 기존 DB 호환: 컬럼 누락 시 추가
     existing = {r[1] for r in cursor.execute("PRAGMA table_info(monthly_factor)")}
-    for col, typ in (("earn_mom", "REAL"), ("factor_mom", "REAL"), ("gross_margin", "REAL"), ("f_score", "INTEGER"), ("accrual", "REAL"), ("fcf_yield", "REAL"), ("sales_g3y", "REAL"), ("op_g3y", "REAL"), ("ni_g3y", "REAL"), ("growth_stab", "REAL"), ("div_yield", "REAL"), ("share_growth", "REAL")):
+    for col, typ in (("earn_mom", "REAL"), ("factor_mom", "REAL"), ("gross_margin", "REAL"), ("f_score", "INTEGER"), ("accrual", "REAL"), ("fcf_yield", "REAL"), ("sales_g3y", "REAL"), ("op_g3y", "REAL"), ("ni_g3y", "REAL"), ("growth_stab", "REAL"), ("div_yield", "REAL"), ("share_growth", "REAL"), ("treasury_pct", "REAL"), ("treasury_chg", "REAL")):
 
         if col not in existing:
             try:

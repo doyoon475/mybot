@@ -153,6 +153,9 @@ def map_factor_columns(df: pd.DataFrame) -> pd.DataFrame:
         # Phase B6: 배당·희석
         "div_yield": ["시가 배당률 (%)", "시가 배당율 (%)"],
         "share_growth": ["주식수 증가율 (%)"],
+        # Phase B7: 자사주
+        "treasury_pct": ["자사주 비중 (%)"],
+        "treasury_chg": [],
     }
 
     cols = list(df.columns)
@@ -238,6 +241,22 @@ def map_factor_columns(df: pd.DataFrame) -> pd.DataFrame:
             if std == "share_growth" and (
                 ("보통주 수정주식수" in col and "1년전" in col and "현재" in col)
                 or col == "주식수 증가율 (%)"
+            ):
+                rename[col] = std
+                used_src.add(col)
+                break
+            if std == "treasury_pct" and (
+                col == "자사주 비중 (%)"
+                or ("자사주" in col and "상장주식수" in col and "100" in col)
+            ):
+                rename[col] = std
+                used_src.add(col)
+                break
+            if std == "treasury_chg" and (
+                "자사주비중" in col
+                and "1년전" in col
+                and "현재" in col
+                and "3개월" not in col
             ):
                 rename[col] = std
                 used_src.add(col)
@@ -410,7 +429,7 @@ def process_raw_data(skip_existing_months: bool = False, only_recent_files: int 
             "date", "ticker", "per", "pbr", "psr", "ev_ebitda", "roe", "op_margin",
             "gross_margin", "debt_ratio", "f_score", "mom_1m", "mom_6m", "mom_12m",
             "earn_mom", "sales_g3y", "op_g3y", "ni_g3y", "growth_stab",
-            "div_yield", "share_growth",
+            "div_yield", "share_growth", "treasury_pct", "treasury_chg",
         ]
         for col in insert_cols:
             if col not in df.columns:
@@ -461,8 +480,9 @@ def process_raw_data(skip_existing_months: bool = False, only_recent_files: int 
                     INSERT OR REPLACE INTO monthly_factor 
                     (date, ticker, per, pbr, psr, ev_ebitda, roe, op_margin, gross_margin,
                      debt_ratio, f_score, mom_1m, mom_6m, mom_12m, earn_mom,
-                     sales_g3y, op_g3y, ni_g3y, growth_stab, div_yield, share_growth)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     sales_g3y, op_g3y, ni_g3y, growth_stab, div_yield, share_growth,
+                     treasury_pct, treasury_chg)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', insert_data)
                 conn.commit()  # 매 파일마다 커밋하여 lock 방지
                 break # 성공 시 루프 탈출

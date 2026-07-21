@@ -100,6 +100,8 @@ def ensure_factor_columns(conn: Optional[sqlite3.Connection] = None) -> None:
             ("growth_stab", "REAL"),
             ("div_yield", "REAL"),
             ("share_growth", "REAL"),
+            ("treasury_pct", "REAL"),
+            ("treasury_chg", "REAL"),
         ):
             if col not in existing:
                 conn.execute(f"ALTER TABLE monthly_factor ADD COLUMN {col} {typ}")

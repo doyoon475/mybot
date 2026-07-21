@@ -35,16 +35,17 @@ except Exception:
     _cached_macro = None
     _DEF_SV = {"per": 25, "pbr": 25, "psr": 15, "ev": 15, "per_sec": 10, "pbr_sec": 10}
     _DEF_SQ = {
-        "roe": 14,
-        "opm": 8,
-        "gpm": 8,
-        "fscore": 8,
-        "vol": 12,
-        "accrual": 10,
-        "fcf": 10,
-        "growth": 12,
-        "div": 10,
+        "roe": 12,
+        "opm": 7,
+        "gpm": 7,
+        "fscore": 7,
+        "vol": 10,
+        "accrual": 9,
+        "fcf": 9,
+        "growth": 10,
+        "div": 9,
         "share": 8,
+        "treasury": 12,
     }
 
     _DEF_SM = {"price": 40, "earn": 35, "factor": 25, "mom1": 20, "mom6": 40, "mom12": 40}
@@ -87,8 +88,9 @@ _SUB_DEFAULTS = {
     "sub_accrual": _ai_sub("sub_quality", "accrual", _DEF_SQ.get("accrual", 13)),
     "sub_fcf": _ai_sub("sub_quality", "fcf", _DEF_SQ.get("fcf", 10)),
     "sub_growth": _ai_sub("sub_quality", "growth", _DEF_SQ.get("growth", 12)),
-    "sub_div": _ai_sub("sub_quality", "div", _DEF_SQ.get("div", 10)),
+    "sub_div": _ai_sub("sub_quality", "div", _DEF_SQ.get("div", 9)),
     "sub_share": _ai_sub("sub_quality", "share", _DEF_SQ.get("share", 8)),
+    "sub_treasury": _ai_sub("sub_quality", "treasury", _DEF_SQ.get("treasury", 12)),
     "sub_price_mom": _ai_sub("sub_momentum", "price", _DEF_SM["price"]),
     "sub_earn_mom": _ai_sub("sub_momentum", "earn", _DEF_SM["earn"]),
     "sub_factor_mom": _ai_sub("sub_momentum", "factor", _DEF_SM["factor"]),
@@ -127,8 +129,9 @@ def apply_ai_weights_to_session(ai_weights: dict):
     st.session_state.sub_accrual = int(sq.get("accrual", 13))
     st.session_state.sub_fcf = int(sq.get("fcf", 10))
     st.session_state.sub_growth = int(sq.get("growth", 12))
-    st.session_state.sub_div = int(sq.get("div", 10))
+    st.session_state.sub_div = int(sq.get("div", 9))
     st.session_state.sub_share = int(sq.get("share", 8))
+    st.session_state.sub_treasury = int(sq.get("treasury", 12))
     st.session_state.sub_price_mom = int(sm.get("price", 40))
     st.session_state.sub_earn_mom = int(sm.get("earn", 35))
     st.session_state.sub_factor_mom = int(sm.get("factor", 25))
@@ -158,11 +161,12 @@ def load_db_data():
     g_sel = "f.growth_stab" if "growth_stab" in cols else "NULL AS growth_stab"
     div_sel = "f.div_yield" if "div_yield" in cols else "NULL AS div_yield"
     sh_sel = "f.share_growth" if "share_growth" in cols else "NULL AS share_growth"
+    ts_sel = "f.treasury_chg" if "treasury_chg" in cols else "NULL AS treasury_chg"
     query_factor = f"""
         SELECT f.date, f.ticker, m.name as '종목명', m.sector as '섹터', 
                f.per, f.pbr, f.psr, f.ev_ebitda, f.roe, f.op_margin, f.gross_margin, 
                f.f_score, f.mom_1m, f.mom_6m, f.mom_12m, {earn_sel}, {fm_sel},
-               {acc_sel}, {fcf_sel}, {g_sel}, {div_sel}, {sh_sel}
+               {acc_sel}, {fcf_sel}, {g_sel}, {div_sel}, {sh_sel}, {ts_sel}
         FROM monthly_factor f
         JOIN stock_master m ON f.ticker = m.ticker
         WHERE m.is_active = 1
@@ -173,7 +177,7 @@ def load_db_data():
     factor_cols = [
         'per', 'pbr', 'psr', 'ev_ebitda', 'roe', 'op_margin', 'gross_margin',
         'f_score', 'mom_1m', 'mom_6m', 'mom_12m', 'earn_mom', 'factor_mom',
-        'accrual', 'fcf_yield', 'growth_stab', 'div_yield', 'share_growth'
+        'accrual', 'fcf_yield', 'growth_stab', 'div_yield', 'share_growth', 'treasury_chg'
     ]
     for col in factor_cols:
         if col in df_factor.columns:
@@ -338,16 +342,17 @@ with st.sidebar.expander("🔽 우량(Quality) 세부 비중", expanded=False):
     sub_growth = st.slider("다년성장 growth_stab (높을수록↑)", 0, 100, key="sub_growth", on_change=reset_ui_state)
     sub_div = st.slider("배당수익률 div_yield (높을수록↑)", 0, 100, key="sub_div", on_change=reset_ui_state)
     sub_share = st.slider("주식수증가 share_growth (낮을수록↑)", 0, 100, key="sub_share", on_change=reset_ui_state)
+    sub_treasury = st.slider("자사주비중증가 treasury_chg (높을수록↑)", 0, 100, key="sub_treasury", on_change=reset_ui_state)
     
     tot_qual_sub = (
         sub_roe + sub_opm + sub_gpm + sub_fscore + sub_vol
-        + sub_accrual + sub_fcf + sub_growth + sub_div + sub_share
+        + sub_accrual + sub_fcf + sub_growth + sub_div + sub_share + sub_treasury
     )
-    f_roe, f_opm, f_gpm, f_fscore, f_vol, f_accrual, f_fcf, f_growth, f_div, f_share = [
+    f_roe, f_opm, f_gpm, f_fscore, f_vol, f_accrual, f_fcf, f_growth, f_div, f_share, f_treasury = [
         x / tot_qual_sub * real_w_qual if tot_qual_sub > 0 else 0
         for x in (
             sub_roe, sub_opm, sub_gpm, sub_fscore, sub_vol,
-            sub_accrual, sub_fcf, sub_growth, sub_div, sub_share,
+            sub_accrual, sub_fcf, sub_growth, sub_div, sub_share, sub_treasury,
         )
     ]
 
@@ -408,6 +413,7 @@ def calculate_rank(df):
         + _wr(df["growth_stab"] if "growth_stab" in df.columns else pd.Series(np.nan, index=df.index), False, f_growth)
         + _wr(df["div_yield"] if "div_yield" in df.columns else pd.Series(np.nan, index=df.index), False, f_div)
         + _wr(df["share_growth"] if "share_growth" in df.columns else pd.Series(np.nan, index=df.index), True, f_share)
+        + _wr(df["treasury_chg"] if "treasury_chg" in df.columns else pd.Series(np.nan, index=df.index), False, f_treasury)
     )
     earn_s = df["earn_mom"] if "earn_mom" in df.columns else pd.Series(np.nan, index=df.index)
     factor_s = df["factor_mom"] if "factor_mom" in df.columns else pd.Series(np.nan, index=df.index)
@@ -584,7 +590,7 @@ if st.session_state.step1_unlocked:
                     '순위', '종목명',
                     'per', 'pbr', 'psr', 'ev_ebitda', 'per_sec', 'pbr_sec',
                     'roe', 'op_margin', 'gross_margin', 'f_score', 'vol_12m', 'accrual', 'fcf_yield', 'growth_stab',
-                    'div_yield', 'share_growth',
+                    'div_yield', 'share_growth', 'treasury_chg',
                     'mom_1m', 'mom_6m', 'mom_12m', 'earn_mom', 'factor_mom'
                 ] if c in df_result.columns
             ]
@@ -672,6 +678,10 @@ if st.session_state.step1_unlocked:
                     + (
                         df_history.groupby("date")["share_growth"].rank(ascending=True, na_option="bottom") * f_share
                         if "share_growth" in df_history.columns else 0
+                    )
+                    + (
+                        df_history.groupby("date")["treasury_chg"].rank(ascending=False, na_option="bottom") * f_treasury
+                        if "treasury_chg" in df_history.columns else 0
                     )
                 )
                 mom_hist = (
