@@ -1,61 +1,95 @@
+import os
 import sqlite3
+import time
+from datetime import datetime, timedelta
+
 import pandas as pd
 import FinanceDataReader as fdr
-import time
 
-def build_price_pipeline():
-    print("🚀 [주가 적재 파이프라인] 10년 치 일별 주가 고속 적재를 시작합니다...")
+DB_PATH = os.path.abspath("./data_cache/quant_history.db")
+
+
+def _connect():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, timeout=120)
+    cur = conn.cursor()
+    cur.execute("PRAGMA synchronous = NORMAL")
+    cur.execute("PRAGMA journal_mode = WAL")
+    cur.execute("PRAGMA busy_timeout = 120000")
+    return conn
+
+
+def build_price_pipeline(start_date: str = "2016-01-01"):
+    print("🚀 [주가 적재 파이프라인] 일별 주가 고속 적재를 시작합니다...")
     start_time = time.time()
-    
-    # SQLite DB 연결 및 속도/안정성 최적화 세팅
-    conn = sqlite3.connect('data_cache/quant_history.db')
+
+    conn = _connect()
     cursor = conn.cursor()
-    cursor.execute('PRAGMA synchronous = NORMAL') 
-    cursor.execute('PRAGMA journal_mode = WAL') # 대용량 쓰기에 훨씬 안전한 WAL 모드
-    
+
     df_master = pd.read_sql("SELECT ticker FROM stock_master WHERE is_active = 1", conn)
-    tickers = df_master['ticker'].tolist()
-    
-    print(f"📊 총 {len(tickers)}개 종목의 주가 데이터를 수집합니다. (약 15~25분 소요 예상)")
-    
+    tickers = df_master["ticker"].tolist()
+    print(f"📊 총 {len(tickers)}개 종목 | 시작일 {start_date}")
+
     for i, ticker in enumerate(tickers):
         print(f"[{i+1}/{len(tickers)}] {ticker} 주가 수집 중...", end="\r")
-        
         try:
-            # FinanceDataReader는 'A000020' 대신 '000020' 형식의 6자리 코드가 필요함
-            fdr_ticker = ticker[1:] if ticker.startswith('A') else ticker
-            df_price = fdr.DataReader(fdr_ticker, '2016-01-01')
-            
-            if df_price.empty:
+            fdr_ticker = ticker[1:] if ticker.startswith("A") else ticker
+            df_price = fdr.DataReader(fdr_ticker, start_date)
+            if df_price is None or df_price.empty:
                 continue
-            
+
             df_price = df_price.reset_index()
-            
-            price_data = list(zip(
-                df_price['Date'].dt.strftime('%Y-%m-%d'),
-                [ticker] * len(df_price),
-                df_price['Close'],
-                df_price['Volume']
-            ))
-            
-            cursor.executemany('''
+            date_col = "Date" if "Date" in df_price.columns else df_price.columns[0]
+            vol = (
+                df_price["Volume"]
+                if "Volume" in df_price.columns
+                else pd.Series([0] * len(df_price))
+            )
+            price_data = list(
+                zip(
+                    pd.to_datetime(df_price[date_col]).dt.strftime("%Y-%m-%d"),
+                    [ticker] * len(df_price),
+                    df_price["Close"],
+                    vol,
+                )
+            )
+            cursor.executemany(
+                """
                 INSERT OR REPLACE INTO daily_price (date, ticker, close, volume)
                 VALUES (?, ?, ?, ?)
-            ''', price_data)
-            
-            # 🚨 시니어의 최적화: 메모리 터짐 방지를 위해 50개 종목마다 안전하게 DB에 확정(Commit)
+                """,
+                price_data,
+            )
             if (i + 1) % 50 == 0:
                 conn.commit()
-                
+                time.sleep(0.2)
         except Exception:
-            pass
-            
-    # 마지막 남은 찌꺼기 데이터 최종 커밋
+            continue
+
     conn.commit()
     conn.close()
-    
-    print(f"\n✅ [성공] 10년 치 주가 데이터가 DB에 완벽히 적재되었습니다!")
-    print(f"⏱️ 소요 시간: {time.time() - start_time:.2f}초")
+    print(f"\n✅ [성공] 주가 적재 완료 | {time.time() - start_time:.1f}초")
+
+
+def update_prices_incremental(lookback_days: int = 14):
+    """일일 자동화용 증분 갱신."""
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT MAX(date) FROM daily_price").fetchone()
+        max_date = row[0] if row and row[0] else None
+    finally:
+        conn.close()
+
+    if max_date:
+        start = (
+            datetime.strptime(max_date, "%Y-%m-%d") - timedelta(days=lookback_days)
+        ).strftime("%Y-%m-%d")
+    else:
+        start = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+
+    print(f"📈 [증분 주가] {start} ~ 오늘 (lookback={lookback_days}일)")
+    build_price_pipeline(start_date=start)
+
 
 if __name__ == "__main__":
-    build_price_pipeline()
+    update_prices_incremental()

@@ -52,22 +52,43 @@ def load_db_data():
         WHERE m.is_active = 1
     """
     df_factor = pd.read_sql(query_factor, conn)
+
+    # ETL로 들어온 헤더 잔여행/문자열 혼재를 숫자형으로 강제 정규화
+    factor_cols = [
+        'per', 'pbr', 'psr', 'ev_ebitda', 'roe', 'op_margin', 'gross_margin',
+        'f_score', 'mom_1m', 'mom_6m', 'mom_12m'
+    ]
+    for col in factor_cols:
+        if col in df_factor.columns:
+            df_factor[col] = pd.to_numeric(df_factor[col], errors='coerce')
+    df_factor[factor_cols] = df_factor[factor_cols].fillna(0)
+    # 티커 표준화: '005930' / 'A005930' → 'A005930' (daily_price와 조인 정합)
+    def _norm_ticker(x):
+        s = str(x).strip()
+        if s.upper().startswith('A') and len(s) >= 7:
+            return 'A' + ''.join(ch for ch in s[1:] if ch.isdigit()).zfill(6)[-6:]
+        digits = ''.join(ch for ch in s if ch.isdigit()).zfill(6)[-6:]
+        return f'A{digits}' if digits != '000000' else s
+
+    df_factor['ticker'] = df_factor['ticker'].map(_norm_ticker)
+    df_factor = df_factor[df_factor['ticker'].astype(str).str.match(r'^A\d{6}$', na=False)].copy()
     
     query_price = "SELECT date, ticker, close FROM daily_price"
     try:
         df_price = pd.read_sql(query_price, conn)
         if not df_price.empty:
             df_price['date'] = pd.to_datetime(df_price['date'])
-            df_price['month'] = df_price['date'].dt.to_period('M')
-            df_monthly_price = df_price.sort_values('date').groupby(['month', 'ticker']).last().reset_index()
-            df_monthly_price['date'] = df_monthly_price['month'].dt.strftime('%Y-%m')
+            df_price['close'] = pd.to_numeric(df_price['close'], errors='coerce')
+            # 유니버스에 있는 종목만 남겨 피벗 메모리/속도 최적화
+            universe = set(df_factor['ticker'].unique())
+            df_price = df_price[df_price['ticker'].isin(universe)].dropna(subset=['close'])
         else:
-            df_monthly_price = pd.DataFrame()
-    except:
-        df_monthly_price = pd.DataFrame()
+            df_price = pd.DataFrame()
+    except Exception:
+        df_price = pd.DataFrame()
         
     conn.close()
-    return df_factor, df_monthly_price
+    return df_factor, df_price
 
 df_all, df_price_all = load_db_data()
 
@@ -76,7 +97,14 @@ if df_all.empty:
     st.stop()
 
 latest_date = df_all['date'].max()
+factor_start = df_all['date'].min()
 df_main = df_all[df_all['date'] == latest_date].copy()
+
+# 팩터 커버리지 안내 (백테스트 기간과 불일치 시 가시성)
+st.sidebar.caption(
+    f"📦 팩터 데이터 구간: **{factor_start} ~ {latest_date}**",
+    help="백테스트는 이 구간의 월별 팩터로만 리밸런싱됩니다. 그 이전은 현금/미편입 상태가 됩니다."
+)
 
 # ==========================================
 # 3. 🎛️ 좌측 사이드바: 팩터 설계소
@@ -164,8 +192,19 @@ def calculate_rank(df):
         df['mom_6m'].rank(ascending=False) * f_mom6 +
         df['mom_12m'].rank(ascending=False) * f_mom12
     )
-    
+
+    # 내부 랭크합(낮을수록 우위) → 화면용 0~100점(높을수록 우위)
+    df['가치점수'] = ((1 - val_rank.rank(pct=True, ascending=True)) * 100).round(1)
+    df['우량점수'] = ((1 - qual_rank.rank(pct=True, ascending=True)) * 100).round(1)
+    df['모멘텀점수'] = ((1 - mom_rank.rank(pct=True, ascending=True)) * 100).round(1)
     df['Total_Rank_Score'] = val_rank + qual_rank + mom_rank
+    # 종합점수 = 사이드바 비중 가중 합 (재정규화 없는 실측값)
+    # 예: 가치20%·우량50%·모멘텀30% → 89.2*0.2 + 98.4*0.5 + 87.6*0.3
+    df['종합점수'] = (
+        df['가치점수'] * real_w_val
+        + df['우량점수'] * real_w_qual
+        + df['모멘텀점수'] * real_w_mom
+    ).round(2)
     return df.sort_values(by='Total_Rank_Score', ascending=True).reset_index(drop=True)
 
 df_result = calculate_rank(df_main.copy())
@@ -188,15 +227,31 @@ if st.button("🚀 실시간 상위 20종목 포트폴리오 추출", type="prim
     st.session_state.step2_unlocked = False 
 
 if st.session_state.step1_unlocked:
-    with st.expander("🔽 Top 20 종목 상세 리스트", expanded=True):
-        display_cols = ['순위', '종목명', '섹터', 'per', 'roe', 'mom_6m', 'mom_12m', 'Total_Rank_Score']
+    with st.expander("🔽 Top 20 종목 리스트 (팩터 점수)", expanded=True):
+        display_cols = ['순위', '종목명', '섹터', '가치점수', '우량점수', '모멘텀점수', '종합점수']
         show_df = df_result.head(20)[display_cols].copy()
-        show_df['Total_Rank_Score'] = show_df['Total_Rank_Score'].round(2)
         st.dataframe(show_df, width="stretch", hide_index=True)
+        st.caption(
+            "✔️ 가치/우량/모멘텀은 유니버스 상대점수(0~100). "
+            "**종합점수 = 가치×비중 + 우량×비중 + 모멘텀×비중** (사이드바 비중 직반영, 재랭킹 없음)."
+        )
+
+        with st.expander("🔒 세부 재무·모멘텀 원천 지표 (유료 구독 예정)", expanded=False):
+            st.info("상세 원천 지표(PER/PBR/ROE 등)는 향후 유료 구독 티어에서 제공합니다. 현재는 미리보기용으로만 노출됩니다.")
+            detail_cols = [
+                '순위', '종목명',
+                'per', 'pbr', 'psr', 'ev_ebitda',
+                'roe', 'op_margin', 'gross_margin', 'f_score',
+                'mom_1m', 'mom_6m', 'mom_12m'
+            ]
+            detail_df = df_result.head(20)[detail_cols].copy()
+            num_cols = [c for c in detail_cols if c not in ('순위', '종목명')]
+            detail_df[num_cols] = detail_df[num_cols].round(2)
+            st.dataframe(detail_df, width="stretch", hide_index=True)
     
     st.divider()
     st.markdown("### 📈 Step 2: 실전 다이내믹 시계열 백테스터")
-    st.info("💡 **알림**: 2019년부터 축적된 **과거 실제 재무(팩터) 데이터**를 바탕으로, 매월(또는 지정 주기별) 랭킹을 다시 계산하여 종목을 교체하는 **진정한 다이내믹 롤링 백테스트**를 수행합니다.")
+    st.info("💡 **알림**: 팩터는 월별 롤링 리밸런싱, **자산 평가는 매일 종가(일별 주가)**로 반영합니다. 적립금은 매월 첫 거래일에만 투입됩니다.")
     st.caption("✔️ 투자 룰: 1~10위 매수 / 11~20위 유지 (최대 비중 15% 캡) / 21위 밖 전량 매도")
     st.caption("💸 수수료 및 슬리피지: 매수 시 0.15%, 매도 시 0.30% (세금 포함) 적용")
     
@@ -218,7 +273,7 @@ if st.session_state.step1_unlocked:
                 st.cache_data.clear()
                 st.rerun()
         else:
-            with st.spinner("10년 치 주가 및 팩터 가중치 기반 다이내믹 리밸런싱을 연산 중입니다..."):
+            with st.spinner("일별 주가 Mark-to-Market + 월간 다이내믹 리밸런싱 연산 중..."):
                 
                 FEE_BUY = 0.0015
                 FEE_SELL = 0.0030
@@ -240,13 +295,27 @@ if st.session_state.step1_unlocked:
                 df_history['Total_Rank_Score'] = val_hist + qual_hist + mom_hist
                 df_history['Rank'] = df_history.groupby('date')['Total_Rank_Score'].rank(ascending=True, method='first')
                 
-                # 투자 기간(년) 슬라이더에 따른 날짜 슬라이싱
-                all_dates = sorted(df_price_all['date'].unique())
-                max_date = pd.to_datetime(all_dates[-1])
-                start_date_str = (max_date - pd.DateOffset(years=invest_years)).strftime('%Y-%m')
-                available_dates = [d for d in all_dates if d >= start_date_str]
+                # 일별 주가 시계열 슬라이싱 (팩터 시작월 이전은 리밸런싱 불가 → 자동 클램프)
+                all_dates = sorted(pd.to_datetime(df_price_all['date'].unique()))
+                max_date = all_dates[-1]
+                user_start = max_date - pd.DateOffset(years=invest_years)
+                factor_start_ts = pd.Timestamp(str(factor_start) + '-01')
+                start_date = max(user_start, factor_start_ts)
+                if start_date > user_start:
+                    st.warning(
+                        f"⚠️ 월별 팩터 DB가 **{factor_start}**부터만 존재합니다. "
+                        f"요청하신 {invest_years}년 구간 대신 **{start_date.date()} ~ {max_date.date()}**로 백테스트를 실행합니다. "
+                        f"(현재 `quant_raw_data` 파일도 2023-04~2026-07만 확인됨 → 2019년치가 필요하면 크롤러로 추가 수집 후 ETL 재실행)"
+                    )
+                available_dates = [d for d in all_dates if d >= start_date]
                 
-                price_pivot = df_price_all.pivot(index='date', columns='ticker', values='close').ffill().fillna(0)
+                price_pivot = (
+                    df_price_all[df_price_all['date'] >= start_date]
+                    .pivot(index='date', columns='ticker', values='close')
+                    .sort_index()
+                    .ffill()
+                    .fillna(0)
+                )
                 
                 cash = init_cap * 10000
                 portfolio = {}
@@ -254,118 +323,148 @@ if st.session_state.step1_unlocked:
                 invested_history = []
                 date_history = []
                 total_invested = cash
+                first_buy_price = {}
                 
-                first_buy_price = {} # 종목별 최초 매수 단가 기록
+                last_ym = None
+                top_10, mid_10 = [], []
                 
-                for date in available_dates:
-                    if date not in price_pivot.index: continue
+                for i, date in enumerate(available_dates):
+                    if date not in price_pivot.index:
+                        continue
                     current_prices = price_pivot.loc[date]
+                    ym = pd.Timestamp(date).strftime('%Y-%m')
                     
-                    if date != available_dates[0]:
-                        cash += monthly_cap * 10000
-                        total_invested += monthly_cap * 10000
+                    # 매월 첫 거래일: 적립금 투입 + 팩터 리밸런싱
+                    is_rebalance = (last_ym is None) or (ym != last_ym)
+                    if is_rebalance:
+                        if last_ym is not None:
+                            cash += monthly_cap * 10000
+                            total_invested += monthly_cap * 10000
+                        last_ym = ym
+                        
+                        past_data = df_history[df_history['date'] <= ym]
+                        if not past_data.empty:
+                            latest_past_date = past_data['date'].max()
+                            monthly_data = df_history[df_history['date'] == latest_past_date]
+                            top_10 = monthly_data[monthly_data['Rank'] <= 10]['ticker'].tolist()
+                            mid_10 = monthly_data[(monthly_data['Rank'] > 10) & (monthly_data['Rank'] <= 20)]['ticker'].tolist()
                     
-                    stock_value = sum(portfolio[t] * current_prices.get(t, 0) for t in portfolio.keys())
+                    # 일별 Mark-to-Market
+                    stock_value = sum(portfolio[t] * current_prices.get(t, 0) for t in portfolio)
                     total_asset = cash + stock_value
                     
-                    # 🚨 [진정한 다이내믹 퀀트 적용] 과거 팩터 기반 롤링(Rolling) 리밸런싱
-                    # 미래 참조(Look-ahead bias)를 방지하기 위해, 현재 시점(date)과 같거나 과거인 데이터 중 가장 최신 데이터를 사용
-                    past_data = df_history[df_history['date'] <= date]
-                    if not past_data.empty:
-                        latest_past_date = past_data['date'].max()
-                        monthly_data = df_history[df_history['date'] == latest_past_date]
-                    else:
-                        monthly_data = pd.DataFrame()
+                    # 리밸런싱일만 매매 실행
+                    if is_rebalance and top_10:
+                        for t in list(portfolio.keys()):
+                            price = current_prices.get(t, 0)
+                            if price == 0:
+                                continue
+                            weight = (portfolio[t] * price) / total_asset if total_asset > 0 else 0
+                            if t not in top_10 and t not in mid_10:
+                                cash += portfolio[t] * price * (1 - FEE_SELL)
+                                del portfolio[t]
+                            elif t in mid_10 and weight > CAP_LIMIT:
+                                excess_value = (weight - CAP_LIMIT) * total_asset
+                                sell_shares = int(excess_value / price)
+                                if sell_shares > 0:
+                                    cash += sell_shares * price * (1 - FEE_SELL)
+                                    portfolio[t] -= sell_shares
                         
-                    if monthly_data.empty:
-                        continue # 과거 데이터가 아예 없는 시점은 포트폴리오 유지(패스)
-                    top_10 = monthly_data[monthly_data['Rank'] <= 10]['ticker'].tolist()
-                    mid_10 = monthly_data[(monthly_data['Rank'] > 10) & (monthly_data['Rank'] <= 20)]['ticker'].tolist()
-                    
-                    for t in list(portfolio.keys()):
-                        price = current_prices.get(t, 0)
-                        if price == 0: continue
-                        weight = (portfolio[t] * price) / total_asset if total_asset > 0 else 0
+                        stock_value = sum(portfolio[t] * current_prices.get(t, 0) for t in portfolio)
+                        total_asset = cash + stock_value
+                        target_weight = 0.10
                         
-                        if t not in top_10 and t not in mid_10:
-                            cash += portfolio[t] * price * (1 - FEE_SELL)
-                            del portfolio[t]
-                        elif t in mid_10 and weight > CAP_LIMIT:
-                            excess_value = (weight - CAP_LIMIT) * total_asset
-                            sell_shares = int(excess_value / price)
-                            if sell_shares > 0:
-                                cash += sell_shares * price * (1 - FEE_SELL)
-                                portfolio[t] -= sell_shares
+                        for t in top_10:
+                            price = current_prices.get(t, 0)
+                            if price == 0:
+                                continue
+                            current_weight = (portfolio.get(t, 0) * price) / total_asset if total_asset > 0 else 0
+                            if current_weight < target_weight:
+                                buy_value = (target_weight - current_weight) * total_asset
+                                actual_buy = min(buy_value, cash)
+                                if actual_buy > price:
+                                    buy_shares = int(actual_buy / (price * (1 + FEE_BUY)))
+                                    if buy_shares > 0:
+                                        portfolio[t] = portfolio.get(t, 0) + buy_shares
+                                        cash -= buy_shares * price * (1 + FEE_BUY)
+                                        if t not in first_buy_price:
+                                            first_buy_price[t] = price
                     
-                    stock_value = sum(portfolio[t] * current_prices.get(t, 0) for t in portfolio.keys())
-                    total_asset = cash + stock_value
-                    target_weight = 0.10
-                    
-                    for t in top_10:
-                        price = current_prices.get(t, 0)
-                        if price == 0: continue
-                        current_weight = (portfolio.get(t, 0) * price) / total_asset if total_asset > 0 else 0
-                        if current_weight < target_weight:
-                            buy_value = (target_weight - current_weight) * total_asset
-                            actual_buy = min(buy_value, cash)
-                            if actual_buy > price:
-                                buy_shares = int(actual_buy / (price * (1 + FEE_BUY)))
-                                portfolio[t] = portfolio.get(t, 0) + buy_shares
-                                cash -= buy_shares * price * (1 + FEE_BUY)
-                                
-                                # 최초 매수 시 해당 단가를 기록
-                                if t not in first_buy_price:
-                                    first_buy_price[t] = price
-                    
-                    final_stock_value = sum(portfolio[t] * current_prices.get(t, 0) for t in portfolio.keys())
-                    date_history.append(pd.to_datetime(date))
+                    final_stock_value = sum(portfolio[t] * current_prices.get(t, 0) for t in portfolio)
+                    date_history.append(pd.Timestamp(date))
                     asset_history.append(cash + final_stock_value)
                     invested_history.append(total_invested)
+
+                if not date_history:
+                    st.error("선택한 기간에 유효한 일별 주가/팩터 교집합이 없습니다.")
+                    st.stop()
 
                 df_asset = pd.DataFrame({
                     'Total_Value': asset_history,
                     'Total_Invested': invested_history
-                }, index=date_history)
+                }, index=pd.DatetimeIndex(date_history))
                 final_val = df_asset['Total_Value'].iloc[-1]
-                years = len(df_asset) / 12
-                cagr = ((final_val / total_invested) ** (1 / years) - 1) * 100 if years > 0 else 0
+                years = max((df_asset.index[-1] - df_asset.index[0]).days / 365.25, 1 / 365.25)
+                cagr = ((final_val / total_invested) ** (1 / years) - 1) * 100 if total_invested > 0 else 0
                 
                 df_asset['HWM'] = df_asset['Total_Value'].cummax()
                 df_asset['Drawdown'] = (df_asset['Total_Value'] / df_asset['HWM'] - 1) * 100
                 mdd = df_asset['Drawdown'].min()
                 
-                show_volatility = st.toggle("🚨 주요 하락장/고변동성 구간 차트에 음영 표시 (MDD -10% 기준)")
+                show_volatility = st.toggle(
+                    "🚨 주요 하락장/고변동성 구간 차트에 음영 표시 (MDD -10% 기준)",
+                    help="낙폭 -10% 이하 구간만 붉은 음영으로 표시합니다. (라벨 중복 없이 가시성 우선)"
+                )
                 
                 fig = go.Figure()
-                # 원금(누적 투자금) 추세선 추가
                 fig.add_trace(go.Scatter(
-                    x=df_asset.index, 
-                    y=df_asset['Total_Invested'], 
-                    mode='lines', 
-                    name='누적 투자 원금', 
-                    line=dict(color='rgba(150, 150, 150, 0.6)', width=2, dash='dash')
+                    x=df_asset.index,
+                    y=df_asset['Total_Invested'],
+                    mode='lines',
+                    name='누적 투자 원금',
+                    line=dict(color='rgba(150, 150, 150, 0.7)', width=2, dash='dash')
                 ))
-                # 퀀트 전략 자산 추세선
                 fig.add_trace(go.Scatter(
-                    x=df_asset.index, 
-                    y=df_asset['Total_Value'], 
-                    mode='lines', 
-                    name='나의 퀀트 랩 자산', 
-                    line=dict(color='#00CC96', width=3)
+                    x=df_asset.index,
+                    y=df_asset['Total_Value'],
+                    mode='lines',
+                    name='나의 퀀트 랩 자산',
+                    line=dict(color='#00CC96', width=2.5)
                 ))
                 
                 if show_volatility:
                     is_dd = df_asset['Drawdown'] <= -10.0
+                    # 연속 구간만 음영 (annotation_text 제거 → 라벨 겹침 해소)
                     dd_starts = df_asset.index[is_dd & ~is_dd.shift(1).fillna(False)]
                     dd_ends = df_asset.index[is_dd & ~is_dd.shift(-1).fillna(False)]
-                    for s, e in zip(dd_starts, dd_ends):
+                    for idx, (s, e) in enumerate(zip(dd_starts, dd_ends)):
                         fig.add_vrect(
-                            x0=s, x1=e, fillcolor="rgba(255, 75, 75, 0.15)", layer="below", line_width=0,
-                            annotation_text="고변동성", annotation_position="top left", annotation_font_size=10, annotation_font_color="red"
+                            x0=s, x1=e,
+                            fillcolor="rgba(255, 59, 48, 0.28)",
+                            layer="below",
+                            line_width=0,
+                        )
+                    # 최장 하락 구간에만 단일 라벨
+                    if len(dd_starts):
+                        lengths = [(e - s).days for s, e in zip(dd_starts, dd_ends)]
+                        j = int(np.argmax(lengths))
+                        fig.add_annotation(
+                            x=dd_starts[j] + (dd_ends[j] - dd_starts[j]) / 2,
+                            y=df_asset['Total_Value'].max(),
+                            text="고변동성(MDD≤-10%)",
+                            showarrow=False,
+                            font=dict(size=11, color="#FF3B30"),
+                            bgcolor="rgba(255,255,255,0.65)",
                         )
                 
-                fig.update_layout(height=400, margin=dict(l=20, r=20, t=30, b=20), hovermode="x unified")
+                fig.update_layout(
+                    height=420,
+                    margin=dict(l=20, r=20, t=30, b=20),
+                    hovermode="x unified",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+                )
                 st.plotly_chart(fig, width="stretch")
+                st.caption("✔️ 곡선은 **매일 종가 평가**, 종목 교체는 **매월 첫 거래일**에 수행됩니다.")
                 
                 rc1, rc2, rc3 = st.columns(3)
                 rc1.metric("최종 자산 (만원)", f"{final_val/10000:,.0f}")
@@ -386,7 +485,6 @@ if st.session_state.step1_unlocked:
                                 stock_returns[name] = ret
                                 
                     if stock_returns:
-                        # 수익률 기준 오름차순 정렬 (Plotly의 가로 막대 차트는 아래부터 위로 렌더링되므로 오름차순이 시각적으로 내림차순처럼 보임)
                         df_stock_ret = pd.DataFrame(list(stock_returns.items()), columns=['종목명', '수익률']).sort_values('수익률', ascending=True)
                         colors = ['#00CC96' if val >= 0 else '#FF4B4B' for val in df_stock_ret['수익률']]
                         
@@ -399,7 +497,7 @@ if st.session_state.step1_unlocked:
                             textposition='outside'
                         ))
                         fig_bar.update_layout(
-                            height=max(400, len(df_stock_ret) * 25), # 종목이 많아지면 차트 높이 자동 확장
+                            height=max(400, len(df_stock_ret) * 25),
                             margin=dict(l=20, r=40, t=30, b=20),
                             xaxis_title="누적 수익률 (%)",
                             yaxis_title="",
@@ -410,7 +508,11 @@ if st.session_state.step1_unlocked:
 
                 with st.expander("📉 구간별 낙폭(Drawdown) 심층 분석", expanded=False):
                     fig_dd = go.Figure()
-                    fig_dd.add_trace(go.Scatter(x=df_asset.index, y=df_asset['Drawdown'], fill='tozeroy', mode='lines', name='Drawdown', line=dict(color='#FF4B4B', width=2)))
+                    fig_dd.add_trace(go.Scatter(
+                        x=df_asset.index, y=df_asset['Drawdown'],
+                        fill='tozeroy', mode='lines', name='Drawdown',
+                        line=dict(color='#FF4B4B', width=2)
+                    ))
                     fig_dd.update_layout(height=250, margin=dict(l=20, r=20, t=30, b=20), hovermode="x unified", yaxis_title="낙폭 (%)")
                     st.plotly_chart(fig_dd, width="stretch")
                     st.caption("✔️ 차트의 깊은 붉은 영역이 시스템이 수학적으로 찾아낸 계좌의 최대 스트레스(Drawdown) 구간입니다.")

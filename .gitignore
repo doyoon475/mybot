@@ -6,3 +6,4 @@ data_cache/
 *.csv
 .env
 daily_price
+debug_html/

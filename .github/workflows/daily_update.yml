@@ -1,50 +1,83 @@
-name: Daily Quant Data Update (Git Bot)
+name: Daily Quant Data Accumulate
 
-# 💡 시니어의 조언: 
-# 현재 SQLite DB 파일(quant_history.db)은 용량이 500MB를 넘으므로 Github에 올릴 수 없어 .gitignore로 막아둔 상태입니다.
-# 따라서 GitHub Actions에서 이 봇을 돌리면 "새로운 가상 컴퓨터"에서 돌기 때문에 기존 DB가 없습니다.
-# 
-# [완벽한 자동화를 위한 2가지 선택지]
-# 1. (추천) 무료 클라우드 DB(Supabase, PostgreSQL 등)로 DB를 마이그레이션하여 GitHub Actions가 클라우드 DB에 직접 데이터를 쏘게 만듭니다.
-# 2. GitHub Actions를 쓰지 않고, 윈도우의 '작업 스케줄러(Task Scheduler)'를 통해 내 컴퓨터에서 매일 자정에 `python daily_updater.py`가 자동으로 돌도록 설정합니다.
+# 과거 DB 위에 매일 퀀트킹 첨부 + 주가를 누적합니다.
+# DB(~450MB)는 git에 넣지 않고 Release(quant-db-latest)에 zstd로 보관합니다.
+#
+# --- 최초 1회 (로컬) ---
+#   pip install zstandard
+#   gh auth login
+#   python publish_db_release.py
+#
+# --- GitHub Secrets ---
+#   QUANTKING_TOKEN  (권장: 브라우저 F12 → Application → localStorage → token)
+#   또는 QUANTKING_EMAIL + QUANTKING_PASSWORD
+#   DART_API_KEY / GEMINI_API_KEY (선택)
 
 on:
   schedule:
-    # 매일 한국 시간 기준 밤 11시 (UTC 14:00)에 자동 실행
-    - cron: '0 14 * * *'
-  workflow_dispatch: # 수동으로 버튼을 눌러서 실행할 수 있는 옵션
+    # 평일 한국시간 18:30 ≈ UTC 09:30 (장 마감 후)
+    - cron: '30 9 * * 1-5'
+  workflow_dispatch:
 
 jobs:
-  daily-update:
+  daily-accumulate:
     runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: write
 
     steps:
-    - name: 1. 저장소 코드 가져오기
-      uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: 2. 파이썬 3.12 환경 세팅
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.12'
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
 
-    - name: 3. 필요 패키지 설치
-      run: |
-        python -m pip install --upgrade pip
-        pip install pandas numpy plotly streamlit requests google-generativeai python-dotenv FinanceDataReader OpenDartReader selenium
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-    - name: 4. 자동 업데이트 파이프라인 가동 (DART & 주가)
-      env:
-        DART_API_KEY: ${{ secrets.DART_API_KEY }}
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      run: |
-        python daily_updater.py
-        
-    # 만약 DB를 클라우드(PostgreSQL 등)로 이전한다면 이 단계에서 파이프라인 종료.
-    # 파일(CSV 등)을 GitHub에 커밋해서 남기려면 아래 단계를 사용합니다.
-    # - name: 5. 변경된 데이터 깃허브에 자동 커밋 (Git Bot)
-    #   run: |
-    #     git config --local user.email "bot@quant.com"
-    #     git config --local user.name "Quant Update Bot"
-    #     git add .
-    #     git commit -m "🤖 Auto Update: Daily Quant Data" || echo "No changes to commit"
-    #     git push
+      - name: Download latest DB from Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p data_cache quant_raw_data
+          if gh release view quant-db-latest >/dev/null 2>&1; then
+            gh release download quant-db-latest -p 'quant_history.db.zst' -D data_cache --clobber
+            python db_snapshot.py decompress
+          else
+            echo "::error::Release 'quant-db-latest' 없음. 로컬에서 python publish_db_release.py 실행 필요"
+            exit 1
+          fi
+
+      - name: Run daily accumulate pipeline
+        env:
+          QUANTKING_TOKEN: ${{ secrets.QUANTKING_TOKEN }}
+          QUANTKING_EMAIL: ${{ secrets.QUANTKING_EMAIL }}
+          QUANTKING_PASSWORD: ${{ secrets.QUANTKING_PASSWORD }}
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          QUANTKING_PAGES: '2'
+          PRICE_LOOKBACK_DAYS: '14'
+        run: python daily_updater.py
+
+      - name: Compress & upload DB to Release
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python db_snapshot.py compress
+          gh release upload quant-db-latest data_cache/quant_history.db.zst --clobber
+
+      - name: Upload raw artifact (debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-raw-files
+          path: quant_raw_data/
+          retention-days: 7
+          if-no-files-found: ignore

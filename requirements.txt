@@ -5,3 +5,7 @@ beautifulsoup4
 lxml
 plotly
 streamlit
+python-dotenv
+zstandard
+openpyxl
+OpenDartReader

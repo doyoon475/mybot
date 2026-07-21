@@ -39,7 +39,11 @@ COLUMN_MAPPING = {
     '1년 등락률 (%)': 'mom_12m'
 }
 
-def process_raw_data():
+def process_raw_data(skip_existing_months: bool = False, only_recent_files: int = 0):
+    """
+    skip_existing_months: DB에 이미 있는 YYYY-MM 은 스킵 (일일 자동화용)
+    only_recent_files: 0이면 전체, N이면 mtime 기준 최신 N개만 처리
+    """
     raw_dir = os.path.abspath("./quant_raw_data")
     db_path = os.path.abspath("./data_cache/quant_history.db")
     
@@ -66,6 +70,9 @@ def process_raw_data():
     # 단계 2 & 3: Transform & Load (데이터 정제 및 DB 초고속 적재)
     # ---------------------------------------------------------
     data_files = glob.glob(os.path.join(raw_dir, "*.csv")) + glob.glob(os.path.join(raw_dir, "*.xlsx"))
+    if only_recent_files and only_recent_files > 0:
+        data_files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+        data_files = data_files[:only_recent_files]
     
     if not data_files:
         print("⚠️ 처리할 데이터 파일(.csv, .xlsx)이 존재하지 않습니다.")
@@ -79,6 +86,16 @@ def process_raw_data():
     cursor.execute("PRAGMA synchronous = NORMAL")
     cursor.execute("PRAGMA journal_mode = WAL")  # MEMORY 대신 WAL 모드로 변경하여 동시성 개선
     cursor.execute("PRAGMA busy_timeout = 300000")
+
+    existing_months = set()
+    if skip_existing_months:
+        try:
+            existing_months = {
+                r[0] for r in cursor.execute("SELECT DISTINCT date FROM monthly_factor").fetchall()
+            }
+            print(f"📅 DB에 이미 있는 월: {len(existing_months)}개 (해당 월 스킵)")
+        except Exception:
+            existing_months = set()
     
     total_rows_inserted = 0
 
@@ -90,8 +107,13 @@ def process_raw_data():
         if date_match:
             target_month = date_match.group(0)[:7].replace('.', '-')
         else:
-            target_month = "1900-01" # 파싱 실패 시 예외 처리
+            # 서버 저장명(1681...xlsx)은 본문 날짜가 없으므로 mtime 기준 월 사용
+            target_month = time.strftime("%Y-%m", time.localtime(os.path.getmtime(file_path)))
             
+        if skip_existing_months and target_month in existing_months:
+            print(f"⏭️  [{target_month}] 이미 DB에 있음 → 스킵: {filename[:30]}")
+            continue
+
         print(f"🔄 [{target_month}] 파일 변환 및 적재 중: {filename[:30]}...")
             
         try:
@@ -148,11 +170,17 @@ def process_raw_data():
         # 한 번 복사(copy)를 떠서 메모리를 연속적으로 깔끔하게 재배치해 줌
         df = df.copy()
         
-        # Ticker 및 Date 포맷팅
+        # Ticker 및 Date 포맷팅 (daily_price와 동일하게 A+6자리)
         if 'ticker' in df.columns:
-            df['ticker'] = df['ticker'].astype(str).str.zfill(6)
+            t = df['ticker'].astype(str).str.strip()
         elif '코드' in df.columns:
-            df['ticker'] = df['코드'].astype(str).str.zfill(6)
+            t = df['코드'].astype(str).str.strip()
+        else:
+            print(f"  ⚠️ 티커 컬럼 없음 → 스킵: {filename[:40]}")
+            continue
+        digits = t.str.replace(r'^A', '', regex=True).str.replace(r'\D', '', regex=True).str.zfill(6).str[-6:]
+        df['ticker'] = 'A' + digits
+        df = df[df['ticker'].str.match(r'^A\d{6}$', na=False)].copy()
             
         df['date'] = target_month
         
