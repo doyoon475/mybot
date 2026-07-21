@@ -311,6 +311,55 @@ st.sidebar.caption(
 if st.sidebar.button("🔄 데이터 캐시 새로고침", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
+
+# --- 제품 #4: 회원 로그인/가입 ---
+from auth_users import authenticate, register_user, user_from_session, ensure_users_table
+
+ensure_users_table()
+if "auth_user" not in st.session_state:
+    st.session_state.auth_user = None
+
+st.sidebar.markdown("### 👤 회원")
+_auth = user_from_session(st.session_state.auth_user)
+if _auth:
+    st.sidebar.success(f"{_auth.get('display_name')}님 · {_auth.get('tier', 'free')}")
+    st.sidebar.caption(_auth.get("email", ""))
+    if st.sidebar.button("로그아웃", use_container_width=True):
+        st.session_state.auth_user = None
+        st.rerun()
+else:
+    _tab_login, _tab_reg = st.sidebar.tabs(["로그인", "회원가입"])
+    with _tab_login:
+        _le = st.text_input("이메일", key="login_email")
+        _lp = st.text_input("비밀번호", type="password", key="login_pw")
+        if st.button("로그인", key="btn_login", use_container_width=True):
+            ok, msg, user = authenticate(_le, _lp)
+            if ok and user:
+                st.session_state.auth_user = user
+                st.sidebar.success(msg)
+                st.rerun()
+            else:
+                st.sidebar.error(msg)
+    with _tab_reg:
+        _re = st.text_input("이메일", key="reg_email")
+        _rn = st.text_input("닉네임", key="reg_name", placeholder="선택")
+        _rp = st.text_input("비밀번호 (8자+)", type="password", key="reg_pw")
+        _rp2 = st.text_input("비밀번호 확인", type="password", key="reg_pw2")
+        if st.button("가입하기", key="btn_reg", use_container_width=True):
+            if _rp != _rp2:
+                st.sidebar.error("비밀번호 확인이 일치하지 않습니다.")
+            else:
+                ok, msg, user = register_user(_re, _rp, _rn)
+                if ok and user:
+                    st.session_state.auth_user = user
+                    st.sidebar.success(msg)
+                    st.rerun()
+                else:
+                    st.sidebar.error(msg)
+    st.sidebar.caption("로그인 시 포트 확정·보고서 다운로드가 가능합니다.")
+
+_IS_LOGGED_IN = user_from_session(st.session_state.auth_user) is not None
+
 st.sidebar.markdown("### 🎛️ 나만의 팩터 설계소")
 
 if st.sidebar.button("🤖 AI 매크로 비중 자동 할당", type="primary", use_container_width=True):
@@ -706,14 +755,17 @@ if st.session_state.get("pending_monthly_report"):
 def _show_monthly_report_dialog():
     md = st.session_state.get("monthly_report_md") or ""
     st.markdown(md)
-    st.download_button(
-        "⬇️ 마크다운 다운로드",
-        data=md.encode("utf-8"),
-        file_name=f"quant_lab_report_{latest_date}.md",
-        mime="text/markdown",
-        use_container_width=True,
-    )
-    if st.button("닫기", use_container_width=True):
+    if _IS_LOGGED_IN:
+        st.download_button(
+            "⬇️ 마크다운 다운로드",
+            data=md.encode("utf-8"),
+            file_name=f"quant_lab_report_{latest_date}.md",
+            mime="text/markdown",
+            use_container_width=True,
+        )
+    else:
+        st.info("🔒 보고서 다운로드는 로그인 후 이용할 수 있습니다. (열람은 가능)")
+    if st.button("닫기", key="close_monthly_report", use_container_width=True):
         st.session_state.show_monthly_report = False
         st.rerun()
 
@@ -825,17 +877,21 @@ if st.session_state.step1_unlocked:
     lc1, lc2 = st.columns([2, 1])
     with lc1:
         if st.button("🔒 현재 종합점수 기준으로 이번 달 포트폴리오 확정", width="stretch"):
-            save_portfolio_lock(
-                df_result,
-                latest_date,
-                {
-                    "value": round(real_w_val, 4),
-                    "quality": round(real_w_qual, 4),
-                    "momentum": round(real_w_mom, 4),
-                },
-            )
-            st.success(f"확정 완료 — 기준월 {latest_date}")
-            st.rerun()
+            if not _IS_LOGGED_IN:
+                st.warning("🔒 포트폴리오 확정은 로그인 후 이용할 수 있습니다. 사이드바에서 가입/로그인해 주세요.")
+            else:
+                save_portfolio_lock(
+                    df_result,
+                    latest_date,
+                    {
+                        "value": round(real_w_val, 4),
+                        "quality": round(real_w_qual, 4),
+                        "momentum": round(real_w_mom, 4),
+                        "user": (st.session_state.auth_user or {}).get("email"),
+                    },
+                )
+                st.success(f"확정 완료 — 기준월 {latest_date}")
+                st.rerun()
     with lc2:
         if lock and st.button("🔓 확정 해제", width="stretch"):
             try:
