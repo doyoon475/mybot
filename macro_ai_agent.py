@@ -22,14 +22,16 @@ PERPLEXITY_URL = "https://api.perplexity.ai/chat/completions"
 
 DEFAULT_SUB_VALUE = {"per": 25, "pbr": 25, "psr": 15, "ev": 15, "per_sec": 10, "pbr_sec": 10}
 DEFAULT_SUB_QUALITY = {
-    "roe": 18,
-    "opm": 10,
-    "gpm": 10,
-    "fscore": 10,
-    "vol": 14,
-    "accrual": 12,
-    "fcf": 12,
-    "growth": 14,
+    "roe": 14,
+    "opm": 8,
+    "gpm": 8,
+    "fscore": 8,
+    "vol": 12,
+    "accrual": 10,
+    "fcf": 10,
+    "growth": 12,
+    "div": 10,
+    "share": 8,
 }
 
 DEFAULT_SUB_MOMENTUM = {
@@ -192,7 +194,7 @@ def _call_perplexity() -> dict[str, Any] | None:
   "quality": <0-100>,
   "momentum": <0-100>,
   "sub_value": {{"per":0-100, "pbr":0-100, "psr":0-100, "ev":0-100, "per_sec":0-100, "pbr_sec":0-100}},
-  "sub_quality": {{"roe":0-100, "opm":0-100, "gpm":0-100, "fscore":0-100, "vol":0-100, "accrual":0-100, "fcf":0-100, "growth":0-100}},
+  "sub_quality": {{"roe":0-100, "opm":0-100, "gpm":0-100, "fscore":0-100, "vol":0-100, "accrual":0-100, "fcf":0-100, "growth":0-100, "div":0-100, "share":0-100}},
   "sub_momentum": {{
     "price":0-100, "earn":0-100, "factor":0-100,
     "mom1":0-100, "mom6":0-100, "mom12":0-100
@@ -254,7 +256,7 @@ def _call_gemini() -> dict[str, Any] | None:
     prompt = (
         "한국 주식 퀀트 매크로+세부 비중 JSON만 출력. "
         'keys: value,quality,momentum,sub_value{per,pbr,psr,ev,per_sec,pbr_sec},'
-        "sub_quality{roe,opm,gpm,fscore,vol,accrual,fcf,growth},"
+        "sub_quality{roe,opm,gpm,fscore,vol,accrual,fcf,growth,div,share},"
         "sub_momentum{price,earn,factor,mom1,mom6,mom12},reason. "
         "각 그룹 합 100. reason 한국어 2~4문장."
     )

@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Phase B5: QuantKing 3년 성장률 → growth_stab 백필
-월별 최신 파일에서 sales_g3y/op_g3y/ni_g3y/growth_stab 만 UPDATE.
+Phase B6: QuantKing 배당수익률·주식수 증가율 → div_yield / share_growth 백필
 
 예:
-  python backfill_growth_stab.py
-  python backfill_growth_stab.py --min-month 2024-01
+  python backfill_div_share.py
+  python backfill_div_share.py --min-month 2024-01
 """
 from __future__ import annotations
 
@@ -17,7 +16,6 @@ import pandas as pd
 
 from backfill_factor_gaps import latest_file_per_month
 from factor_builder import _connect, ensure_factor_columns
-from factor_extras import compute_growth_stab
 from raw_data_etl import map_factor_columns, read_quant_table
 
 
@@ -35,17 +33,14 @@ def _null(v):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--min-month", default="2019-06")
-    p.add_argument("--max-month", default=None, help="포함 상한 YYYY-MM (구형만 재필 시)")
     args = p.parse_args()
 
     conn = _connect()
     ensure_factor_columns(conn)
     files = latest_file_per_month(args.min_month)
-    if args.max_month:
-        files = {m: p for m, p in files.items() if m <= args.max_month}
     print(f"대상 월 {len(files)}개 (min={args.min_month})", flush=True)
     t0 = time.time()
-    total = 0
+    total_div = total_sh = 0
     for i, (month, path) in enumerate(sorted(files.items()), 1):
         try:
             raw = map_factor_columns(read_quant_table(path)).copy()
@@ -62,19 +57,17 @@ def main():
             raw["ticker"] = "A" + digits
             raw = raw[raw["ticker"].str.match(r"^A\d{6}$", na=False)].copy()
             raw = raw.drop_duplicates(subset=["ticker"], keep="last")
-            for c in ("sales_g3y", "op_g3y", "ni_g3y"):
+            for c in ("div_yield", "share_growth"):
                 if c not in raw.columns:
                     raw[c] = float("nan")
                 else:
                     raw[c] = pd.to_numeric(raw[c], errors="coerce")
-            raw["growth_stab"] = compute_growth_stab(raw)
+            raw.loc[raw["div_yield"] <= 0, "div_yield"] = float("nan")
 
             rows = list(
                 zip(
-                    [_null(v) for v in raw["sales_g3y"].tolist()],
-                    [_null(v) for v in raw["op_g3y"].tolist()],
-                    [_null(v) for v in raw["ni_g3y"].tolist()],
-                    [_null(v) for v in raw["growth_stab"].tolist()],
+                    [_null(v) for v in raw["div_yield"].tolist()],
+                    [_null(v) for v in raw["share_growth"].tolist()],
                     [month] * len(raw),
                     raw["ticker"].tolist(),
                 )
@@ -82,23 +75,28 @@ def main():
             conn.executemany(
                 """
                 UPDATE monthly_factor
-                SET sales_g3y=?, op_g3y=?, ni_g3y=?, growth_stab=?
+                SET div_yield=?, share_growth=?
                 WHERE date=? AND ticker=?
                 """,
                 rows,
             )
             conn.commit()
-            n = int(raw["growth_stab"].notna().sum())
-            total += n
+            nd = int(raw["div_yield"].notna().sum())
+            ns = int(raw["share_growth"].notna().sum())
+            total_div += nd
+            total_sh += ns
             print(
-                f"  [{i}/{len(files)}] {month}: growth_stab={n} | "
+                f"  [{i}/{len(files)}] {month}: div={nd} share={ns} | "
                 f"{os.path.basename(path)[:42]}",
                 flush=True,
             )
         except Exception as e:
             print(f"  [{i}] {month} 실패: {e}", flush=True)
     conn.close()
-    print(f"✅ 완료 {time.time()-t0:.1f}s | growth_stab 갱신 합계≈{total}", flush=True)
+    print(
+        f"✅ 완료 {time.time()-t0:.1f}s | div_yield≈{total_div} share_growth≈{total_sh}",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

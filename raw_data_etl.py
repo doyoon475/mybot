@@ -146,10 +146,13 @@ def map_factor_columns(df: pd.DataFrame) -> pd.DataFrame:
             "해당분기 예상 영업이익의 전년동기대비 증가율",
             "해당분기 예상 영업이익의 전년동기대비 증가율. 실적 발표시 발표치 반영됨.",
         ],
-        # Phase B5: 다년 성장
+        # Phase B5: 다년 성장 (신·구 헤더 병행)
         "sales_g3y": ["직전년도 매출액의 3년전대비 증가율"],
         "op_g3y": ["직전년도 영업이익의 3년전대비 증가율"],
         "ni_g3y": ["직전년도 지배순이익의 3년전대비 증가율"],
+        # Phase B6: 배당·희석
+        "div_yield": ["시가 배당률 (%)", "시가 배당율 (%)"],
+        "share_growth": ["주식수 증가율 (%)"],
     }
 
     cols = list(df.columns)
@@ -206,18 +209,56 @@ def map_factor_columns(df: pd.DataFrame) -> pd.DataFrame:
                 rename[col] = std
                 used_src.add(col)
                 break
-            if std == "sales_g3y" and "매출액" in col and "3년전" in col and "증가" in col:
+            if std == "sales_g3y" and "매출액" in col and (
+                ("3년전" in col and "증가" in col) or "3년간 YOY" in col
+            ):
                 rename[col] = std
                 used_src.add(col)
                 break
-            if std == "op_g3y" and "영업이익" in col and "3년전" in col and "증가" in col:
+            if std == "op_g3y" and "영업이익" in col and (
+                ("3년전" in col and "증가" in col) or "3년간 YOY" in col
+            ):
                 rename[col] = std
                 used_src.add(col)
                 break
-            if std == "ni_g3y" and "지배순이익" in col and "3년전" in col and "증가" in col:
+            if std == "ni_g3y" and (
+                ("지배순이익" in col or (col.startswith("순이익") and "EPS" not in col))
+                and (("3년전" in col and "증가" in col) or "3년간 YOY" in col)
+            ):
                 rename[col] = std
                 used_src.add(col)
                 break
+            if std == "div_yield" and (
+                col.startswith("연간배당률=")
+                or (("시가" in col) and ("배당률" in col or "배당율" in col) and "고점" not in col and "저점" not in col and "국채" not in col)
+            ):
+                rename[col] = std
+                used_src.add(col)
+                break
+            if std == "share_growth" and (
+                ("보통주 수정주식수" in col and "1년전" in col and "현재" in col)
+                or col == "주식수 증가율 (%)"
+            ):
+                rename[col] = std
+                used_src.add(col)
+                break
+
+    # 2019~2020: 라벨 없는 "NN년->NN년 3년간 YOY" / .1 / .2 = 매출/영업/순이익 순서
+    if not {"sales_g3y", "op_g3y", "ni_g3y"}.issubset(set(rename.values())):
+        legacy = []
+        for col in cols:
+            if col in used_src:
+                continue
+            m = re.fullmatch(r"(\d+년->\d+년 3년간 YOY)(?:\.(\d+))?", col)
+            if m:
+                legacy.append((m.group(1), int(m.group(2) or 0), col))
+        legacy.sort(key=lambda x: (x[0], x[1]))
+        for std, item in zip(("sales_g3y", "op_g3y", "ni_g3y"), legacy[:3]):
+            if std in rename.values():
+                continue
+            col = item[2]
+            rename[col] = std
+            used_src.add(col)
 
     # PER=... 형태 (신버전)
     for col in cols:
@@ -246,6 +287,9 @@ def map_factor_columns(df: pd.DataFrame) -> pd.DataFrame:
             used_src.add(col)
         elif col.startswith("EV/EBITDA=") and "ev_ebitda" not in rename.values():
             rename[col] = "ev_ebitda"
+            used_src.add(col)
+        elif col.startswith("연간배당률=") and "div_yield" not in rename.values():
+            rename[col] = "div_yield"
             used_src.add(col)
 
     out = df.rename(columns=rename)
@@ -366,6 +410,7 @@ def process_raw_data(skip_existing_months: bool = False, only_recent_files: int 
             "date", "ticker", "per", "pbr", "psr", "ev_ebitda", "roe", "op_margin",
             "gross_margin", "debt_ratio", "f_score", "mom_1m", "mom_6m", "mom_12m",
             "earn_mom", "sales_g3y", "op_g3y", "ni_g3y", "growth_stab",
+            "div_yield", "share_growth",
         ]
         for col in insert_cols:
             if col not in df.columns:
@@ -377,6 +422,8 @@ def process_raw_data(skip_existing_months: bool = False, only_recent_files: int 
                     df.loc[df[col] <= 0, col] = float("nan")
                 if col in ("mom_1m", "mom_6m", "mom_12m"):
                     df.loc[df[col] <= -99.9, col] = float("nan")
+                if col == "div_yield":
+                    df.loc[df[col] <= 0, col] = float("nan")
 
         try:
             from factor_extras import compute_growth_stab
@@ -414,8 +461,8 @@ def process_raw_data(skip_existing_months: bool = False, only_recent_files: int 
                     INSERT OR REPLACE INTO monthly_factor 
                     (date, ticker, per, pbr, psr, ev_ebitda, roe, op_margin, gross_margin,
                      debt_ratio, f_score, mom_1m, mom_6m, mom_12m, earn_mom,
-                     sales_g3y, op_g3y, ni_g3y, growth_stab)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     sales_g3y, op_g3y, ni_g3y, growth_stab, div_yield, share_growth)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', insert_data)
                 conn.commit()  # 매 파일마다 커밋하여 lock 방지
                 break # 성공 시 루프 탈출
