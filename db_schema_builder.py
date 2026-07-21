@@ -87,7 +87,7 @@ def create_quant_database():
     ''')
     # 기존 DB 호환: 컬럼 누락 시 추가
     existing = {r[1] for r in cursor.execute("PRAGMA table_info(monthly_factor)")}
-    for col, typ in (("earn_mom", "REAL"), ("factor_mom", "REAL"), ("gross_margin", "REAL"), ("f_score", "INTEGER"), ("accrual", "REAL"), ("fcf_yield", "REAL"), ("sales_g3y", "REAL"), ("op_g3y", "REAL"), ("ni_g3y", "REAL"), ("growth_stab", "REAL"), ("div_yield", "REAL"), ("share_growth", "REAL"), ("treasury_pct", "REAL"), ("treasury_chg", "REAL")):
+    for col, typ in (("earn_mom", "REAL"), ("factor_mom", "REAL"), ("gross_margin", "REAL"), ("f_score", "INTEGER"), ("accrual", "REAL"), ("fcf_yield", "REAL"), ("sales_g3y", "REAL"), ("op_g3y", "REAL"), ("ni_g3y", "REAL"), ("growth_stab", "REAL"), ("div_yield", "REAL"), ("share_growth", "REAL"), ("treasury_pct", "REAL"), ("treasury_chg", "REAL"), ("sales_g1y", "REAL"), ("op_g1y", "REAL"), ("ni_g1y", "REAL"), ("earn_surprise", "REAL")):
 
         if col not in existing:
             try:
@@ -114,9 +114,36 @@ def create_quant_database():
     ''')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_monthly_shares_date ON monthly_shares(date)')
 
+    # ---------------------------------------------------------
+    # 5. 분기 재무 패널 (Phase C9 — DART)
+    # ---------------------------------------------------------
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS quarterly_fund (
+        ticker TEXT NOT NULL,
+        bsns_year INTEGER NOT NULL,
+        reprt_code TEXT NOT NULL,
+        fiscal_q INTEGER,
+        revenue REAL,
+        op_income REAL,
+        net_income REAL,
+        controlling_ni REAL,
+        ebt REAL,
+        equity REAL,
+        assets REAL,
+        liabilities REAL,
+        gross_profit REAL,
+        cfo REAL,
+        capex REAL,
+        source TEXT,
+        PRIMARY KEY (ticker, bsns_year, reprt_code),
+        FOREIGN KEY (ticker) REFERENCES stock_master(ticker)
+    )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_quarterly_fund_year ON quarterly_fund(bsns_year)')
+
     conn.commit()
     conn.close()
-    print("✅ [성공] 'quant_history.db' 내 핵심 테이블(Master, Price, Factor, Shares) 및 인덱스 생성이 완료되었습니다.")
+    print("✅ [성공] 'quant_history.db' 내 핵심 테이블 및 인덱스 생성이 완료되었습니다.")
 
 if __name__ == "__main__":
     create_quant_database()

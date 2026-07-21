@@ -26,5 +26,5 @@ alwaysApply: true
 - 한 세션에 **Phase 전체를 억지로 몰아넣지 말 것**. A1→A2→A3… 단위로 커밋.
 - AI 매크로(`macro_ai_agent`) `sub_value` / `sub_quality` 키를 새 팩터에 맞춰 확장.
 - 가치 멀티플 `≤0`, 모멘텀 `≤-99.9` 는 결측 처리(기존 규칙 유지).
-- **완료:** Phase A–B, C8 `monthly_shares`(QuantKing 히스토리 백필 + FDR 현재 스냅샷, 주간 Actions 연동).
-- **다음:** Phase C9 DART 분기 패널 → Growth / Surprise 근사.
+- **완료:** Phase A–B, C8 `monthly_shares`, C9 `quarterly_fund` + `sales_g1y`/`op_g1y`/`ni_g1y`/`earn_surprise`(컨센서스 없는 YoY 근사).
+- **다음:** C9 분기 전 종목 백필 확대, 또는 `alpha_engine` 분기 패널 연동 / Quality 슬라이더에 g1y·surprise 노출.

@@ -162,11 +162,16 @@ def load_db_data():
     div_sel = "f.div_yield" if "div_yield" in cols else "NULL AS div_yield"
     sh_sel = "f.share_growth" if "share_growth" in cols else "NULL AS share_growth"
     ts_sel = "f.treasury_chg" if "treasury_chg" in cols else "NULL AS treasury_chg"
+    s1 = "f.sales_g1y" if "sales_g1y" in cols else "NULL AS sales_g1y"
+    o1 = "f.op_g1y" if "op_g1y" in cols else "NULL AS op_g1y"
+    n1 = "f.ni_g1y" if "ni_g1y" in cols else "NULL AS ni_g1y"
+    es = "f.earn_surprise" if "earn_surprise" in cols else "NULL AS earn_surprise"
     query_factor = f"""
         SELECT f.date, f.ticker, m.name as '종목명', m.sector as '섹터', 
                f.per, f.pbr, f.psr, f.ev_ebitda, f.roe, f.op_margin, f.gross_margin, 
                f.f_score, f.mom_1m, f.mom_6m, f.mom_12m, {earn_sel}, {fm_sel},
-               {acc_sel}, {fcf_sel}, {g_sel}, {div_sel}, {sh_sel}, {ts_sel}
+               {acc_sel}, {fcf_sel}, {g_sel}, {div_sel}, {sh_sel}, {ts_sel},
+               {s1}, {o1}, {n1}, {es}
         FROM monthly_factor f
         JOIN stock_master m ON f.ticker = m.ticker
         WHERE m.is_active = 1
@@ -177,7 +182,8 @@ def load_db_data():
     factor_cols = [
         'per', 'pbr', 'psr', 'ev_ebitda', 'roe', 'op_margin', 'gross_margin',
         'f_score', 'mom_1m', 'mom_6m', 'mom_12m', 'earn_mom', 'factor_mom',
-        'accrual', 'fcf_yield', 'growth_stab', 'div_yield', 'share_growth', 'treasury_chg'
+        'accrual', 'fcf_yield', 'growth_stab', 'div_yield', 'share_growth', 'treasury_chg',
+        'sales_g1y', 'op_g1y', 'ni_g1y', 'earn_surprise',
     ]
     for col in factor_cols:
         if col in df_factor.columns:
@@ -591,6 +597,7 @@ if st.session_state.step1_unlocked:
                     'per', 'pbr', 'psr', 'ev_ebitda', 'per_sec', 'pbr_sec',
                     'roe', 'op_margin', 'gross_margin', 'f_score', 'vol_12m', 'accrual', 'fcf_yield', 'growth_stab',
                     'div_yield', 'share_growth', 'treasury_chg',
+                    'sales_g1y', 'op_g1y', 'ni_g1y', 'earn_surprise',
                     'mom_1m', 'mom_6m', 'mom_12m', 'earn_mom', 'factor_mom'
                 ] if c in df_result.columns
             ]

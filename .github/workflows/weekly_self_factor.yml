@@ -51,6 +51,8 @@ jobs:
           python factor_builder.py --sleep 1.0
           # Phase C8: 월별 상장주식수 스냅샷 (FDR)
           python shares_snapshot.py --fdr-current --fill-share-growth
+          # Phase C9: DART 분기 패널 (캐시 우선, 최근 2개 연도)
+          python quarterly_panel.py --import-annual-cache --fetch --apply --years 2 --sleep 1.0
 
       - name: Upload DB
         if: success()

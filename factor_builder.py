@@ -70,6 +70,12 @@ ACCOUNT_ALIASES = {
         "기계장치의 취득",
         "건설중인자산의 취득",
     ],
+    "ebt": [
+        "법인세비용차감전순이익",
+        "법인세차감전순이익",
+        "세전계속사업이익",
+        "법인세비용차감전계속사업이익",
+    ],
 }
 
 
@@ -102,6 +108,10 @@ def ensure_factor_columns(conn: Optional[sqlite3.Connection] = None) -> None:
             ("share_growth", "REAL"),
             ("treasury_pct", "REAL"),
             ("treasury_chg", "REAL"),
+            ("sales_g1y", "REAL"),
+            ("op_g1y", "REAL"),
+            ("ni_g1y", "REAL"),
+            ("earn_surprise", "REAL"),
         ):
             if col not in existing:
                 conn.execute(f"ALTER TABLE monthly_factor ADD COLUMN {col} {typ}")
