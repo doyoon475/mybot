@@ -732,6 +732,72 @@ if st.session_state.get("show_monthly_report") and st.session_state.get("monthly
 # ==========================================
 # 5. 점진적 공개(Progressive Disclosure) UI
 # ==========================================
+
+# --- 제품 #5: 실시간 시장 국면 레이더 ---
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cached_kospi_regime():
+    from market_regime import compute_kospi_regime
+    return compute_kospi_regime(60)
+
+try:
+    _rg = _cached_kospi_regime()
+except Exception as _e:
+    _rg = {"ok": False, "error": str(_e)}
+
+if _rg.get("ok"):
+    _chg = float(_rg["chg"])
+    _dd = float(_rg["dd_pct"])
+    _chg_color = "#3DDC97" if _chg >= 0 else "#FF6B6B"
+    _dd_color = "#FF6B6B" if _dd < -5 else "#F0C674"
+    _arrow = "↑" if _chg >= 0 else "↓"
+    st.markdown(
+        f"""
+<div style="
+  background: linear-gradient(180deg,#1a1c1e 0%,#121314 100%);
+  border-radius: 16px; padding: 20px 22px 16px 22px; margin-bottom: 1rem;
+  border: 1px solid rgba(255,255,255,0.06);">
+  <div style="color:#fff;font-size:1.25rem;font-weight:700;margin-bottom:14px;">
+    📡 실시간 시장 국면 레이더
+    <span style="color:#888;font-size:0.75rem;font-weight:400;margin-left:8px;">
+      KOSPI · {_rg['asof']} 기준 (규칙 기반)
+    </span>
+  </div>
+  <div style="display:flex;gap:12px;flex-wrap:wrap;">
+    <div style="flex:1;min-width:160px;">
+      <div style="color:#9aa0a6;font-size:0.8rem;">현재 KOSPI 지수</div>
+      <div style="color:#fff;font-size:1.75rem;font-weight:700;">{_rg['kospi']:,.2f}</div>
+      <span style="background:rgba(61,220,151,0.15);color:{_chg_color};
+        padding:2px 10px;border-radius:999px;font-size:0.85rem;">
+        {_arrow} {_chg:+.2f} ({_rg['chg_pct']:+.2f}%)
+      </span>
+    </div>
+    <div style="flex:1;min-width:160px;">
+      <div style="color:#9aa0a6;font-size:0.8rem;">시장 심리 국면</div>
+      <div style="color:#fff;font-size:1.55rem;font-weight:700;">
+        {_rg['regime']} {_rg['emoji']}
+      </div>
+    </div>
+    <div style="flex:1;min-width:180px;">
+      <div style="color:#9aa0a6;font-size:0.8rem;">최근 {_rg['dd_lookback']}일 고점 대비 낙폭(DD)</div>
+      <div style="color:#fff;font-size:1.75rem;font-weight:700;">{_dd:.2f}%</div>
+      <span style="background:rgba(255,107,107,0.15);color:{_dd_color};
+        padding:2px 10px;border-radius:999px;font-size:0.85rem;">
+        ↓ {_dd:.2f}%
+      </span>
+    </div>
+  </div>
+  <div style="
+    margin-top:16px;padding:12px 14px;border-radius:10px;
+    background:rgba(120,40,40,0.45);color:#ffc9c9;font-size:0.95rem;">
+    ⚠️ {_rg['advice']}
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+else:
+    st.info(f"📡 시장 국면 레이더: {_rg.get('error', '데이터 없음')}")
+
 st.markdown(f"### 📊 전략 요약 (기준월: {latest_date})")
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("분석 대상 종목", f"{len(df_result):,} 개")
