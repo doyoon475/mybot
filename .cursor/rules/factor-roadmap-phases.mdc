@@ -27,4 +27,21 @@ alwaysApply: true
 - AI 매크로(`macro_ai_agent`) `sub_value` / `sub_quality` 키를 새 팩터에 맞춰 확장.
 - 가치 멀티플 `≤0`, 모멘텀 `≤-99.9` 는 결측 처리(기존 규칙 유지).
 - **완료:** Phase A–B, C8 `monthly_shares`, C9 `quarterly_fund` + `sales_g1y`/`op_g1y`/`ni_g1y`/`earn_surprise`(컨센서스 없는 YoY 근사).
-- **다음:** C9 전 종목 2018~ 백필 완료 대기, 또는 `alpha_engine` 분기 패널 연동 / Quality 슬라이더에 g1y·surprise 노출.
+- **다음:** C9 전 종목 2018~ 백필 완료 대기 → 7월 멀티플 ETL 복구 → `alpha_engine`/슬라이더에 g1y·surprise 노출.
+
+## 데이터 무결성 (단기 → 장기)
+
+### 단기 (적용됨)
+1. **Release 업로드 커버리지 게이트** (`db_quality_gate.py`): 최신월 PER 커버리지·행 수·직전월 대비 급락 검사 실패 시 `quant-db-latest` 업로드 중단.
+2. **pull/decompress 시 WAL·SHM 제거** (`db_snapshot._clear_sidecar`).
+3. **쓰기 작업 직렬화**: C9 / ETL / `pull_db_release` 동시 실행 금지 (대시보드는 읽기만).
+
+### 중기 (예정)
+- 일일 Actions에 **날짜별 Release 백업 태그** (`quant-db-YYYY-MM-DD`) 유지.
+- `pull_db_release` 후 커버리지 요약 출력(경고).
+- 스팩·이상 유니버스 필터를 랭킹/ETL에 고정.
+
+### 장기 (기억)
+- **적재 DB와 서빙 DB 분리** (또는 Turso 등 원격) — Streamlit 읽기와 대량 적재 충돌 제거.
+- 적재 파이프라인은 staging → 게이트 통과 후만 promote.
+- 회원·상점(#3/#4) 고도화 시 FastAPI + 별도 스토리지 검토 (#8 후속).

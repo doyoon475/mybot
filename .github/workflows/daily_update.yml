@@ -12,6 +12,7 @@ name: Daily Quant Data Accumulate
 #   QUANTKING_EMAIL + QUANTKING_PASSWORD  (또는 QUANTKING_TOKEN)
 #   DART_API_KEY   ← 자체 팩터 빌드에 필수 (opendart.fss.or.kr)
 #   GEMINI_API_KEY (선택)
+#   요약 메일(선택): SMTP_USER, SMTP_PASSWORD(Gmail 앱비번), NOTIFY_TO
 
 on:
   schedule:
@@ -73,9 +74,23 @@ jobs:
         if: success()
         env:
           GH_TOKEN: ${{ github.token }}
+          # 최신월 PER 커버리지 게이트 (불완전 ETL이 latest를 덮지 못함)
+          GATE_MIN_PER_COVERAGE: '0.80'
+          GATE_MIN_ROWS: '500'
+          GATE_MAX_DROP_VS_PREV: '0.35'
         run: |
+          python db_quality_gate.py
           python db_snapshot.py compress
           gh release upload quant-db-latest data_cache/quant_history.db.zst --clobber
+          # 날짜 백업 태그(롤백용). 동일 날짜 재실행 시 자산 실패해도 latest는 유지.
+          DAY_TAG="quant-db-$(date -u +%Y-%m-%d)"
+          if gh release view "$DAY_TAG" >/dev/null 2>&1; then
+            gh release upload "$DAY_TAG" data_cache/quant_history.db.zst --clobber || true
+          else
+            gh release create "$DAY_TAG" data_cache/quant_history.db.zst \
+              --title "Quant History DB ($DAY_TAG)" \
+              --notes "일일 스냅샷 백업 (게이트 통과분)" || true
+          fi
 
       - name: Upload raw artifact (debug)
         if: always()
@@ -85,3 +100,15 @@ jobs:
           path: quant_raw_data/
           retention-days: 7
           if-no-files-found: ignore
+
+      - name: Email daily summary
+        if: always()
+        env:
+          SMTP_HOST: smtp.gmail.com
+          SMTP_PORT: "587"
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          NOTIFY_TO: ${{ secrets.NOTIFY_TO }}
+          JOB_STATUS: ${{ job.status }}
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python notify_daily_summary.py

@@ -19,6 +19,11 @@ def main():
         print("DB 없음:", DB_PATH)
         sys.exit(1)
 
+    # 불완전 팩터월이 latest Release를 오염시키지 않도록
+    from db_quality_gate import assert_release_quality
+
+    assert_release_quality(DB_PATH)
+
     from db_snapshot import compress
     compress()
 

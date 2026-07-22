@@ -16,14 +16,26 @@ DB = os.path.abspath("./data_cache/quant_history.db")
 ZST = os.path.abspath("./data_cache/quant_history.db.zst")
 
 
+def _clear_sidecar():
+    """덮어쓰기 전 잔여 WAL/SHM 제거 (옛 WAL이 붙으면 malformed 발생)."""
+    for side in (DB + "-wal", DB + "-shm"):
+        try:
+            if os.path.exists(side):
+                os.remove(side)
+        except OSError as e:
+            print(f"[warn] sidecar 삭제 실패 ({side}): {e}")
+
+
 def decompress():
     if not os.path.exists(ZST):
         print("없음:", ZST)
         sys.exit(1)
     os.makedirs(os.path.dirname(DB), exist_ok=True)
+    _clear_sidecar()
     dctx = zstd.ZstdDecompressor()
     with open(ZST, "rb") as src, open(DB, "wb") as dst:
         dctx.copy_stream(src, dst)
+    _clear_sidecar()
     print(f"복원 완료: {os.path.getsize(DB)/1024/1024:.1f} MB")
 
 

@@ -317,17 +317,91 @@ def import_annual_cache() -> int:
     return n
 
 
-def active_tickers(limit: Optional[int] = None) -> List[str]:
+def active_tickers(
+    limit: Optional[int] = None,
+    exclude_spac: bool = True,
+) -> List[str]:
     conn = _connect()
     df = pd.read_sql(
-        "SELECT ticker FROM stock_master WHERE is_active = 1 ORDER BY ticker",
+        "SELECT ticker, name FROM stock_master WHERE is_active = 1 ORDER BY ticker",
         conn,
     )
     conn.close()
+    if exclude_spac and "name" in df.columns:
+        name = df["name"].astype(str)
+        df = df[~name.str.contains(r"스팩|SPAC", case=False, na=False)].copy()
     tickers = [_norm_ticker(t) for t in df["ticker"].tolist()]
     if limit:
         tickers = tickers[:limit]
     return tickers
+
+
+def _fmt_duration(sec: float) -> str:
+    sec = max(0, int(sec))
+    h, rem = divmod(sec, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h{m:02d}m"
+    if m:
+        return f"{m}m{s:02d}s"
+    return f"{s}s"
+
+
+def _progress_line(
+    i: int,
+    n: int,
+    saved: int,
+    skipped: int,
+    empty: int,
+    errors: int,
+    t0: float,
+    ticker: str,
+    width: int = 28,
+) -> str:
+    pct = (100.0 * i / n) if n else 100.0
+    filled = int(width * i / n) if n else width
+    bar = "█" * filled + "░" * (width - filled)
+    elapsed = time.time() - t0
+    eta = (elapsed / i) * (n - i) if i else 0.0
+    return (
+        f"\rC9 [{bar}] {i}/{n} ({pct:5.1f}%)  "
+        f"saved={saved} skip={skipped} empty={empty} err={errors}  "
+        f"elapsed={_fmt_duration(elapsed)} ETA={_fmt_duration(eta)}  "
+        f"now={ticker}   "
+    )
+
+
+def _write_progress_file(
+    path: str,
+    i: int,
+    n: int,
+    saved: int,
+    skipped: int,
+    empty: int,
+    errors: int,
+    t0: float,
+    ticker: str,
+) -> None:
+    try:
+        elapsed = time.time() - t0
+        eta = (elapsed / i) * (n - i) if i else 0.0
+        pct = (100.0 * i / n) if n else 100.0
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(
+                f"phase=C9_fetch\n"
+                f"progress={i}/{n}\n"
+                f"percent={pct:.2f}\n"
+                f"saved={saved}\n"
+                f"skipped={skipped}\n"
+                f"empty={empty}\n"
+                f"errors={errors}\n"
+                f"elapsed_sec={elapsed:.0f}\n"
+                f"eta_sec={eta:.0f}\n"
+                f"current_ticker={ticker}\n"
+                f"updated={time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            )
+    except OSError:
+        pass
 
 
 def fetch_panel(
@@ -350,15 +424,25 @@ def fetch_panel(
                 "SELECT ticker, bsns_year, reprt_code FROM quarterly_fund"
             ).fetchall()
         }
+    progress_path = os.path.abspath("./data_cache/c9_progress.txt")
+    os.makedirs(os.path.dirname(progress_path), exist_ok=True)
     print(
         f"📡 DART 분기 fetch | tickers={len(tickers)} years={years} "
         f"reprts={list(reprts)} skip_existing={skip_existing} "
         f"db_rows={len(existing)}",
         flush=True,
     )
+    print(f"📄 진행률 파일 → {progress_path}", flush=True)
+    print(
+        "  (터미널에 진행 바가 갱신됩니다. 25종마다 checkpoint 한 줄 출력)",
+        flush=True,
+    )
     saved = 0
     skipped = 0
+    empty = 0
+    errors = 0
     t0 = time.time()
+    n = len(tickers)
     for i, ticker in enumerate(tickers, 1):
         for year in years:
             for reprt in reprts:
@@ -368,6 +452,7 @@ def fetch_panel(
                 try:
                     df = fetch_finstate_reprt(dart, ticker, year, reprt, sleep_sec)
                     if df.empty:
+                        empty += 1
                         continue
                     fund = extract_fundamentals(df)
                     src = "dart_singl"
@@ -382,21 +467,40 @@ def fetch_panel(
                     existing.add((ticker, int(year), reprt))
                     saved += 1
                 except Exception as e:
+                    errors += 1
                     msg = str(e)
                     if "NoneType" not in msg:
-                        print(f"  ⚠️ {ticker} {year}/{reprt}: {msg[:80]}", flush=True)
-        if i % 50 == 0:
+                        # 진행 바 줄 깨지지 않게 개행 후 경고
+                        print(
+                            f"\n  ⚠️ {ticker} {year}/{reprt}: {msg[:80]}",
+                            flush=True,
+                        )
+        # 매 종목마다 한 줄 진행 바(\r) + 진행 파일
+        print(
+            _progress_line(i, n, saved, skipped, empty, errors, t0, ticker),
+            end="",
+            flush=True,
+        )
+        _write_progress_file(
+            progress_path, i, n, saved, skipped, empty, errors, t0, ticker
+        )
+        if i % 25 == 0:
             conn.commit()
             print(
-                f"  [{i}/{len(tickers)}] saved≈{saved} skip≈{skipped} | {time.time()-t0:.0f}s",
+                f"\n  ✓ checkpoint [{i}/{n}] "
+                f"saved={saved} skip={skipped} empty={empty} err={errors} | "
+                f"{_fmt_duration(time.time() - t0)} "
+                f"(ETA {_fmt_duration((time.time() - t0) / i * (n - i) if i else 0)})",
                 flush=True,
             )
     conn.commit()
     conn.close()
     print(
-        f"✅ fetch 완료 saved={saved} skipped={skipped} | {time.time()-t0:.1f}s",
+        f"\n✅ fetch 완료 saved={saved} skipped={skipped} "
+        f"empty={empty} errors={errors} | {_fmt_duration(time.time() - t0)}",
         flush=True,
     )
+    _write_progress_file(progress_path, n, n, saved, skipped, empty, errors, t0, "DONE")
     return saved
 
 

@@ -55,9 +55,26 @@ docker compose up --build -d
 |------|------|
 | 회원 DB | `data_cache/users.db` 백업 |
 | 퀀트 DB | Release `quant-db-latest` + 일일 Actions |
+| DB 품질 | 업로드 전 `python db_quality_gate.py` (PER 커버리지 게이트) |
 | API 키 | GitHub Secrets / 서버 `.env` only |
+| 요약 메일 | Secrets: `SMTP_USER`, `SMTP_PASSWORD`(앱 비번), `NOTIFY_TO` |
 | 헬스체크 | `GET /_stcore/health` |
 | 다음 단계 | #3 상점·유료 전에 FastAPI 분리 검토 |
+
+### 일일 요약 메일 설정 (Gmail)
+
+1. Google 계정 → 보안 → **2단계 인증** 켜기 → **앱 비밀번호** 발급  
+2. GitHub 리포 **Settings → Secrets and variables → Actions** 에 추가:
+   - `SMTP_USER` = 발신 Gmail  
+   - `SMTP_PASSWORD` = 앱 비밀번호  
+   - `NOTIFY_TO` = 수신 주소 (예: 본인 Gmail)  
+3. 평일 Actions 종료 시(성공/실패 모두) 커버리지·게이트·런 링크 요약이 옵니다.  
+   DB 파일(~450MB)은 첨부하지 않습니다.
+
+### DB가 다시 안 깨지게 (요약)
+- **게이트:** 최신월 팩터가 빈약하면 Release 업로드 자체를 막음.
+- **동시 쓰기 금지:** C9·ETL·pull 중에는 다른 writer/대시보드 적재를 끄기.
+- **장기:** 적재 DB ≠ 서빙 DB 분리 (로드맵에 기록됨).
 
 ## 빠른 검증
 
