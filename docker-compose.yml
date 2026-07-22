@@ -7,9 +7,10 @@ services:
     image: quant-lab-v2:latest
     ports:
       - "8501:8501"
-    # .env 가 있으면 API 키가 주입됩니다 (없어도 기동은 가능하도록 문서 참고)
+    # Compose v2.24+: .env 없어도 기동 (API 키는 있으면 주입)
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       - TZ=Asia/Seoul
     volumes:
