@@ -55,7 +55,7 @@ docker compose up --build -d
 |------|------|
 | 회원 DB | `data_cache/users.db` 백업 |
 | 퀀트 DB | Release `quant-db-latest` + 일일 Actions |
-| DB 품질 | 업로드 전 `python db_quality_gate.py` (PER 커버리지 게이트) |
+| DB 품질 | `db_quality_gate.py`: 빈 달 하한 + 직전월 급락 + (PER≥50% 또는 PBR≥80%) |
 | API 키 | GitHub Secrets / 서버 `.env` only |
 | 요약 메일 | Secrets: `SMTP_USER`, `SMTP_PASSWORD`(앱 비번), `NOTIFY_TO` |
 | 헬스체크 | `GET /_stcore/health` |

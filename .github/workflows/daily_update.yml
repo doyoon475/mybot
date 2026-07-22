@@ -74,9 +74,12 @@ jobs:
         if: success()
         env:
           GH_TOKEN: ${{ github.token }}
-          # 최신월 PER 커버리지 게이트 (불완전 ETL이 latest를 덮지 못함)
-          GATE_MIN_PER_COVERAGE: '0.80'
+          # 이중 게이트: 빈 달 차단 + 정상 달(PER~50% 또는 PBR~80%) 허용
           GATE_MIN_ROWS: '500'
+          GATE_MIN_PER_COVERAGE: '0.50'
+          GATE_MIN_PBR_COVERAGE: '0.80'
+          GATE_DISASTER_PER: '0.10'
+          GATE_DISASTER_PBR: '0.20'
           GATE_MAX_DROP_VS_PREV: '0.35'
         run: |
           python db_quality_gate.py

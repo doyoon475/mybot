@@ -2,14 +2,22 @@
 """
 Release/업로드 전 DB 품질 게이트.
 
-불완전한 monthly_factor(예: 최신월 PER 거의 없음)가 quant-db-latest 를
-덮어쓰지 못하게 막는다.
+빈 달(예: 최신월 PER/PBR 거의 없음)이 quant-db-latest 를 덮지 못하게 막되,
+정상 운영 달(PER~50~60%, PBR 높음)은 통과시킨다.
+
+규칙 (AND/OR):
+  1) 행 수 >= GATE_MIN_ROWS (기본 500)
+  2) 재난 하한: per < GATE_DISASTER_PER(0.10) AND pbr < GATE_DISASTER_PBR(0.20)
+     → 무조건 실패
+  3) 운영 통과: per >= GATE_MIN_PER(0.50) OR pbr >= GATE_MIN_PBR(0.80)
+  4) 직전월이 '건강'(per>=MIN_PER 또는 pbr>=MIN_PBR)인데
+     최신월 per가 GATE_MAX_DROP_VS_PREV(0.35) 이상 급락 → 실패
+     (PBR 급락도 동일 임계로 검사)
 
 환경변수:
-  GATE_MIN_PER_COVERAGE   기본 0.80  (최신월 per>0 비율)
-  GATE_MIN_ROWS           기본 500
-  GATE_MAX_DROP_VS_PREV   기본 0.35  (직전월 대비 커버리지 하락 허용폭)
-  GATE_SKIP=1             게이트 생략 (비상용)
+  GATE_MIN_ROWS, GATE_MIN_PER_COVERAGE, GATE_MIN_PBR_COVERAGE
+  GATE_DISASTER_PER, GATE_DISASTER_PBR, GATE_MAX_DROP_VS_PREV
+  GATE_SKIP=1  비상 생략
 """
 from __future__ import annotations
 
@@ -40,10 +48,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 def latest_factor_coverage(db_path: str) -> dict[str, Any]:
-    """
-    최신·직전 monthly_factor 월의 per 커버리지.
-    DB는 읽기 전용으로 연다 (적재 중 프로세스와 충돌 최소화).
-    """
+    """최신·직전 monthly_factor 월의 per/pbr/roe 커버리지 (읽기 전용)."""
     uri = f"file:{os.path.abspath(db_path)}?mode=ro"
     conn = sqlite3.connect(uri, uri=True, timeout=30)
     try:
@@ -96,28 +101,48 @@ def latest_factor_coverage(db_path: str) -> dict[str, Any]:
         conn.close()
 
 
+def _month_healthy(m: dict[str, Any], min_per: float, min_pbr: float) -> bool:
+    return m["per_cov"] >= min_per or m["pbr_cov"] >= min_pbr
+
+
 def evaluate_gate(
     db_path: str,
     min_per_cov: Optional[float] = None,
+    min_pbr_cov: Optional[float] = None,
     min_rows: Optional[int] = None,
     max_drop_vs_prev: Optional[float] = None,
+    disaster_per: Optional[float] = None,
+    disaster_pbr: Optional[float] = None,
 ) -> tuple[bool, str, dict[str, Any]]:
-    """
-    통과 여부, 메시지, 상세 dict.
-    """
+    """통과 여부, 메시지, 상세 dict."""
     if os.getenv("GATE_SKIP", "").lower() in ("1", "true", "yes"):
         return True, "GATE_SKIP=1 — 게이트 생략", {}
 
-    min_per_cov = (
-        _env_float("GATE_MIN_PER_COVERAGE", 0.80)
+    min_per = (
+        _env_float("GATE_MIN_PER_COVERAGE", 0.50)
         if min_per_cov is None
         else min_per_cov
     )
+    min_pbr = (
+        _env_float("GATE_MIN_PBR_COVERAGE", 0.80)
+        if min_pbr_cov is None
+        else min_pbr_cov
+    )
     min_rows = _env_int("GATE_MIN_ROWS", 500) if min_rows is None else min_rows
-    max_drop_vs_prev = (
+    max_drop = (
         _env_float("GATE_MAX_DROP_VS_PREV", 0.35)
         if max_drop_vs_prev is None
         else max_drop_vs_prev
+    )
+    dis_per = (
+        _env_float("GATE_DISASTER_PER", 0.10)
+        if disaster_per is None
+        else disaster_per
+    )
+    dis_pbr = (
+        _env_float("GATE_DISASTER_PBR", 0.20)
+        if disaster_pbr is None
+        else disaster_pbr
     )
 
     info = latest_factor_coverage(db_path)
@@ -135,33 +160,46 @@ def evaluate_gate(
             f"prev={prev['date']} n={prev['n']} "
             f"per={prev['per_cov']:.1%} pbr={prev['pbr_cov']:.1%} roe={prev['roe_cov']:.1%}"
         )
+    summary = " | ".join(lines)
 
     if latest["n"] < min_rows:
+        return False, f"최신월 행 수 부족: {latest['n']} < {min_rows}. {summary}", info
+
+    # 1) 재난 하한 — 빈 달
+    if latest["per_cov"] < dis_per and latest["pbr_cov"] < dis_pbr:
         return (
             False,
-            f"최신월 행 수 부족: {latest['n']} < {min_rows}. " + " | ".join(lines),
+            f"재난 하한(빈 달): per={latest['per_cov']:.1%} < {dis_per:.0%} "
+            f"AND pbr={latest['pbr_cov']:.1%} < {dis_pbr:.0%}. {summary}",
             info,
         )
 
-    if latest["per_cov"] < min_per_cov:
-        return (
-            False,
-            f"최신월 PER 커버리지 부족: {latest['per_cov']:.1%} < {min_per_cov:.0%}. "
-            + " | ".join(lines),
-            info,
-        )
-
-    if prev and prev["per_cov"] >= min_per_cov:
-        drop = prev["per_cov"] - latest["per_cov"]
-        if drop > max_drop_vs_prev:
+    # 2) 직전월 대비 급락 (직전월이 건강할 때만)
+    if prev and _month_healthy(prev, min_per, min_pbr):
+        per_drop = prev["per_cov"] - latest["per_cov"]
+        pbr_drop = prev["pbr_cov"] - latest["pbr_cov"]
+        if per_drop > max_drop:
             return (
                 False,
-                f"직전월 대비 PER 커버리지 급락: -{drop:.1%} "
-                f"(허용 {max_drop_vs_prev:.0%}). " + " | ".join(lines),
+                f"직전월 대비 PER 급락: -{per_drop:.1%} (허용 {max_drop:.0%}). {summary}",
+                info,
+            )
+        if pbr_drop > max_drop:
+            return (
+                False,
+                f"직전월 대비 PBR 급락: -{pbr_drop:.1%} (허용 {max_drop:.0%}). {summary}",
                 info,
             )
 
-    return True, "OK — " + " | ".join(lines), info
+    # 3) 운영 통과: PER 또는 PBR
+    if not _month_healthy(latest, min_per, min_pbr):
+        return (
+            False,
+            f"운영 커버리지 부족: per>={min_per:.0%} 또는 pbr>={min_pbr:.0%} 필요. {summary}",
+            info,
+        )
+
+    return True, "OK — " + summary, info
 
 
 def assert_release_quality(db_path: str) -> None:
@@ -172,8 +210,8 @@ def assert_release_quality(db_path: str) -> None:
         return
     print(f"❌ DB 품질 게이트 실패 — Release 업로드 중단:\n   {msg}", flush=True)
     print(
-        "   (비상 시 GATE_SKIP=1 로 우회 가능. "
-        "임계값: GATE_MIN_PER_COVERAGE / GATE_MIN_ROWS / GATE_MAX_DROP_VS_PREV)",
+        "   (비상 시 GATE_SKIP=1. "
+        "임계: GATE_MIN_PER/PBR, GATE_DISASTER_PER/PBR, GATE_MAX_DROP_VS_PREV)",
         flush=True,
     )
     raise SystemExit(2)
