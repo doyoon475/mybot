@@ -19,8 +19,74 @@ PORTFOLIO_LOCK_PATH = os.path.abspath("./data_cache/portfolio_lock.json")
 # 1. 초기 UI 및 Session State(메모리) 설정
 # ==========================================
 st.set_page_config(page_title="초고속 퀀트 대시보드", layout="wide")
-st.title("🧪 다이내믹 퀀트 랩 V2 (실전 백테스트 엔진)")
-st.caption("SQLite 고속 DB 기반 | 점진적 공개(Progressive Disclosure) UI 적용")
+
+# --- 제품 #4: 회원 (우측 상단 콤팩트) ---
+from auth_users import authenticate, register_user, user_from_session, ensure_users_table
+
+ensure_users_table()
+if "auth_user" not in st.session_state:
+    st.session_state.auth_user = None
+_auth = user_from_session(st.session_state.auth_user)
+_IS_LOGGED_IN = _auth is not None
+
+st.markdown(
+    """
+<style>
+/* 헤더 우측 회원 버튼 콤팩트 */
+div[data-testid="stPopover"] > button {
+  font-size: 0.85rem !important;
+  padding: 0.25rem 0.7rem !important;
+  min-height: 2rem !important;
+  white-space: nowrap;
+}
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+_hdr_l, _hdr_r = st.columns([5.5, 1.15])
+with _hdr_l:
+    st.title("🧪 다이내믹 퀀트 랩 V2 (실전 백테스트 엔진)")
+    st.caption("SQLite 고속 DB 기반 | 점진적 공개(Progressive Disclosure) UI 적용")
+with _hdr_r:
+    st.write("")  # 타이틀과 대략 맞춤
+    if _auth:
+        _label = f"👤 {_auth.get('display_name') or '회원'}"
+        with st.popover(_label, use_container_width=True):
+            st.caption(f"{_auth.get('email', '')}")
+            st.caption(f"플랜 · {_auth.get('tier', 'free')}")
+            if st.button("로그아웃", key="btn_logout", use_container_width=True):
+                st.session_state.auth_user = None
+                st.rerun()
+    else:
+        with st.popover("👤 로그인 / 가입", use_container_width=True):
+            _tab_login, _tab_reg = st.tabs(["로그인", "가입"])
+            with _tab_login:
+                _le = st.text_input("이메일", key="login_email")
+                _lp = st.text_input("비밀번호", type="password", key="login_pw")
+                if st.button("로그인", key="btn_login", use_container_width=True):
+                    ok, msg, user = authenticate(_le, _lp)
+                    if ok and user:
+                        st.session_state.auth_user = user
+                        st.rerun()
+                    else:
+                        st.error(msg)
+            with _tab_reg:
+                _re = st.text_input("이메일", key="reg_email")
+                _rn = st.text_input("닉네임", key="reg_name", placeholder="선택")
+                _rp = st.text_input("비밀번호 (8자+)", type="password", key="reg_pw")
+                _rp2 = st.text_input("비밀번호 확인", type="password", key="reg_pw2")
+                if st.button("가입하기", key="btn_reg", use_container_width=True):
+                    if _rp != _rp2:
+                        st.error("비밀번호 확인이 일치하지 않습니다.")
+                    else:
+                        ok, msg, user = register_user(_re, _rp, _rn)
+                        if ok and user:
+                            st.session_state.auth_user = user
+                            st.rerun()
+                        else:
+                            st.error(msg)
+            st.caption("로그인 시 포트 확정·보고서 다운로드 가능")
 
 # 직전 AI 매크로 비중 캐시(재시작/새로고침 후에도 유지)
 try:
@@ -311,54 +377,6 @@ st.sidebar.caption(
 if st.sidebar.button("🔄 데이터 캐시 새로고침", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
-
-# --- 제품 #4: 회원 로그인/가입 ---
-from auth_users import authenticate, register_user, user_from_session, ensure_users_table
-
-ensure_users_table()
-if "auth_user" not in st.session_state:
-    st.session_state.auth_user = None
-
-st.sidebar.markdown("### 👤 회원")
-_auth = user_from_session(st.session_state.auth_user)
-if _auth:
-    st.sidebar.success(f"{_auth.get('display_name')}님 · {_auth.get('tier', 'free')}")
-    st.sidebar.caption(_auth.get("email", ""))
-    if st.sidebar.button("로그아웃", use_container_width=True):
-        st.session_state.auth_user = None
-        st.rerun()
-else:
-    _tab_login, _tab_reg = st.sidebar.tabs(["로그인", "회원가입"])
-    with _tab_login:
-        _le = st.text_input("이메일", key="login_email")
-        _lp = st.text_input("비밀번호", type="password", key="login_pw")
-        if st.button("로그인", key="btn_login", use_container_width=True):
-            ok, msg, user = authenticate(_le, _lp)
-            if ok and user:
-                st.session_state.auth_user = user
-                st.sidebar.success(msg)
-                st.rerun()
-            else:
-                st.sidebar.error(msg)
-    with _tab_reg:
-        _re = st.text_input("이메일", key="reg_email")
-        _rn = st.text_input("닉네임", key="reg_name", placeholder="선택")
-        _rp = st.text_input("비밀번호 (8자+)", type="password", key="reg_pw")
-        _rp2 = st.text_input("비밀번호 확인", type="password", key="reg_pw2")
-        if st.button("가입하기", key="btn_reg", use_container_width=True):
-            if _rp != _rp2:
-                st.sidebar.error("비밀번호 확인이 일치하지 않습니다.")
-            else:
-                ok, msg, user = register_user(_re, _rp, _rn)
-                if ok and user:
-                    st.session_state.auth_user = user
-                    st.sidebar.success(msg)
-                    st.rerun()
-                else:
-                    st.sidebar.error(msg)
-    st.sidebar.caption("로그인 시 포트 확정·보고서 다운로드가 가능합니다.")
-
-_IS_LOGGED_IN = user_from_session(st.session_state.auth_user) is not None
 
 st.sidebar.markdown("### 🎛️ 나만의 팩터 설계소")
 
@@ -851,6 +869,119 @@ if _rg.get("ok"):
 else:
     st.info(f"📡 시장 국면 레이더: {_rg.get('error', '데이터 없음')}")
 
+# --- 제품 #5-b: 코스피 대비 상대강도 (방어 / 상승 곡선) ---
+@st.cache_data(ttl=300, show_spinner="상대강도 계산 중…")
+def _cached_relative_strength(price_asof: str, tickers: tuple):
+    from relative_strength import compute_relative_strength
+
+    if not tickers or not price_asof:
+        return pd.DataFrame()
+    cut = (pd.Timestamp(price_asof) - pd.Timedelta(days=200)).strftime("%Y-%m-%d")
+    conn = sqlite3.connect("data_cache/quant_history.db")
+    try:
+        ph = ",".join("?" * len(tickers))
+        sub = pd.read_sql(
+            f"SELECT date, ticker, close FROM daily_price "
+            f"WHERE date >= ? AND ticker IN ({ph})",
+            conn,
+            params=[cut, *tickers],
+        )
+    except Exception:
+        sub = pd.DataFrame()
+    finally:
+        conn.close()
+    if sub.empty:
+        return pd.DataFrame()
+    sub["date"] = pd.to_datetime(sub["date"])
+    sub["close"] = pd.to_numeric(sub["close"], errors="coerce")
+    return compute_relative_strength(sub, tickers=list(tickers))
+
+
+with st.expander("📈 코스피 대비 상대강도 · 방어/상승 종목 (#5-b)", expanded=True):
+    st.caption(
+        "RS = 종목수익률 − 코스피수익률. "
+        "**버티는 종목**은 지수보다 덜 빠진 종목, **상승 곡선**은 RS가 높은 종목입니다. "
+        "(일봉·약 5분 캐시 · 투자자문 아님)"
+    )
+    _rs_universe = (
+        df_result.sort_values("종합점수", ascending=False)["ticker"]
+        .astype(str)
+        .head(400)
+        .tolist()
+    )
+    _price_asof = (
+        str(pd.to_datetime(df_price_all["date"].max()).date())
+        if not df_price_all.empty
+        else ""
+    )
+    try:
+        _df_rs = _cached_relative_strength(_price_asof, tuple(_rs_universe))
+    except Exception as _rs_err:
+        _df_rs = pd.DataFrame()
+        st.warning(f"상대강도 계산 실패: {_rs_err}")
+
+    if _df_rs is not None and not _df_rs.empty:
+        from relative_strength import top_defensive, top_offensive
+
+        _name_map = dict(
+            zip(df_result["ticker"].astype(str), df_result["종목명"].astype(str))
+        )
+        _sec_map = dict(
+            zip(df_result["ticker"].astype(str), df_result["섹터"].astype(str))
+        )
+        _def = top_defensive(_df_rs, 15).copy()
+        _off = top_offensive(_df_rs, 15).copy()
+        for _d in (_def, _off):
+            _d["종목명"] = _d["ticker"].map(_name_map).fillna(_d["ticker"])
+            _d["섹터"] = _d["ticker"].map(_sec_map).fillna("-")
+
+        _regime_label = (_rg.get("regime") or "") if isinstance(_rg, dict) else ""
+        if any(k in _regime_label for k in ("공포", "불안", "경계")):
+            st.info(f"현재 국면 **{_regime_label}** → 방어(버티기) 종목을 우선 확인하세요.")
+        elif "탐욕" in _regime_label or "과열" in _regime_label:
+            st.info(f"현재 국면 **{_regime_label}** → 상승 곡선 추격보다 방어·우량도 함께 보세요.")
+        elif _regime_label:
+            st.caption(f"현재 국면: {_regime_label} — 방어·상승 표를 함께 참고하세요.")
+
+        c_def, c_off = st.columns(2)
+        with c_def:
+            st.markdown("#### 🛡️ 버티는 종목 (방어)")
+            st.caption("지수 대비 낙폭 작음 + RS")
+            st.dataframe(
+                _def[
+                    ["종목명", "섹터", "rs_20d", "rs_60d", "dd_60d", "dd_vs_kospi"]
+                ].rename(
+                    columns={
+                        "rs_20d": "RS 20일(%)",
+                        "rs_60d": "RS 60일(%)",
+                        "dd_60d": "낙폭 60일(%)",
+                        "dd_vs_kospi": "낙폭 우위(pp)",
+                    }
+                ),
+                hide_index=True,
+                width="stretch",
+            )
+        with c_off:
+            st.markdown("#### 🚀 상승 곡선 (공격)")
+            st.caption("코스피 대비 초과수익(RS) 상위")
+            st.dataframe(
+                _off[["종목명", "섹터", "rs_20d", "rs_60d", "ret_60d"]].rename(
+                    columns={
+                        "rs_20d": "RS 20일(%)",
+                        "rs_60d": "RS 60일(%)",
+                        "ret_60d": "수익률 60일(%)",
+                    }
+                ),
+                hide_index=True,
+                width="stretch",
+            )
+        _asof_rs = (
+            str(_df_rs["asof"].iloc[0]) if "asof" in _df_rs.columns else _price_asof
+        )
+        st.caption(f"기준일 {_asof_rs} · 유니버스 {len(_df_rs):,}종 (종합점수 Top 400)")
+    else:
+        st.info("상대강도 계산에 필요한 일봉/코스피 데이터가 부족합니다.")
+
 st.markdown(f"### 📊 전략 요약 (기준월: {latest_date})")
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("분석 대상 종목", f"{len(df_result):,} 개")
@@ -878,7 +1009,7 @@ if st.session_state.step1_unlocked:
     with lc1:
         if st.button("🔒 현재 종합점수 기준으로 이번 달 포트폴리오 확정", width="stretch"):
             if not _IS_LOGGED_IN:
-                st.warning("🔒 포트폴리오 확정은 로그인 후 이용할 수 있습니다. 사이드바에서 가입/로그인해 주세요.")
+                st.warning("🔒 포트폴리오 확정은 로그인 후 이용할 수 있습니다. 우측 상단에서 가입/로그인해 주세요.")
             else:
                 save_portfolio_lock(
                     df_result,
