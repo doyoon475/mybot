@@ -23,11 +23,25 @@ st.set_page_config(page_title="초고속 퀀트 대시보드", layout="wide")
 # --- 제품 #4: 회원 (우측 상단 콤팩트) ---
 from auth_users import authenticate, register_user, user_from_session, ensure_users_table
 
+# ---------------------------------------------------------------------------
+# BETA: 회원 전용 게이트 임시 해제 (포트 확정·보고서 다운로드)
+# 정식/유료화 전에 반드시 False 로 되돌릴 것. (.env BETA_SKIP_AUTH_GATES=0)
+# 로드맵: product-roadmap-ux.mdc → 「베타: 인증 게이트 복구」
+# ---------------------------------------------------------------------------
+_BETA_SKIP_AUTH_GATES = os.getenv("BETA_SKIP_AUTH_GATES", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
 ensure_users_table()
 if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
 _auth = user_from_session(st.session_state.auth_user)
 _IS_LOGGED_IN = _auth is not None
+# 베타에서는 로그인 없이도 확정/다운로드 허용. 정식 출시 시 _BETA_SKIP_AUTH_GATES=False
+_CAN_USE_MEMBER_FEATURES = _IS_LOGGED_IN or _BETA_SKIP_AUTH_GATES
 
 st.markdown(
     """
@@ -47,7 +61,13 @@ div[data-testid="stPopover"] > button {
 _hdr_l, _hdr_r = st.columns([5.5, 1.15])
 with _hdr_l:
     st.title("🧪 다이내믹 퀀트 랩 V2 (실전 백테스트 엔진)")
-    st.caption("SQLite 고속 DB 기반 | 점진적 공개(Progressive Disclosure) UI 적용")
+    if _BETA_SKIP_AUTH_GATES:
+        st.caption(
+            "SQLite 고속 DB 기반 | 점진적 공개 UI | "
+            "**베타: 로그인 없이 포트 확정·보고서 다운로드 가능** (정식 전 인증 복구 예정)"
+        )
+    else:
+        st.caption("SQLite 고속 DB 기반 | 점진적 공개(Progressive Disclosure) UI 적용")
 with _hdr_r:
     st.write("")  # 타이틀과 대략 맞춤
     if _auth:
@@ -86,7 +106,24 @@ with _hdr_r:
                             st.rerun()
                         else:
                             st.error(msg)
-            st.caption("로그인 시 포트 확정·보고서 다운로드 가능")
+            if _BETA_SKIP_AUTH_GATES:
+                st.caption("베타: 로그인 없이도 포트 확정·다운로드 가능")
+            else:
+                st.caption("로그인 시 포트 확정·보고서 다운로드 가능")
+
+# --- 메뉴: 퀀트 랩 / 사용 안내 ---
+_nav = st.sidebar.radio(
+    "메뉴",
+    ["🧪 퀀트 랩", "📖 사용 안내"],
+    index=0,
+    key="app_nav",
+    help="사용 안내: 투자 룰·백테스트 해석·CAGR/MDD 등 용어 설명",
+)
+if _nav == "📖 사용 안내":
+    from user_guide import render_user_guide
+
+    render_user_guide()
+    st.stop()
 
 # 직전 AI 매크로 비중 캐시(재시작/새로고침 후에도 유지)
 try:
@@ -171,6 +208,11 @@ for _k, _v in _SUB_DEFAULTS.items():
 def reset_ui_state():
     """하위 단계 unlock만 리셋. 매크로/세부 비중·ai_reason은 절대 건드리지 않음."""
     st.session_state.step1_unlocked = False
+    st.session_state.step2_unlocked = False
+
+
+def reset_backtest_only():
+    """투자 룰·버퍼만 바꿀 때: 랭킹 표는 유지, 백테스트만 다시 돌리게 함."""
     st.session_state.step2_unlocked = False
 
 def apply_ai_weights_to_session(ai_weights: dict):
@@ -311,6 +353,9 @@ def load_db_data():
             df_price['close'] = pd.to_numeric(df_price['close'], errors='coerce')
             if "volume" in df_price.columns:
                 df_price["volume"] = pd.to_numeric(df_price["volume"], errors="coerce")
+            df_price["ticker"] = df_price["ticker"].map(_norm_ticker)
+            # '005930'+'A005930' 정규화 충돌 → pivot 시 duplicate index 방지
+            df_price = df_price.drop_duplicates(subset=["date", "ticker"], keep="last")
             # 유니버스에 있는 종목만 남겨 피벗 메모리/속도 최적화
             universe = set(df_factor['ticker'].unique())
             df_price = df_price[df_price['ticker'].isin(universe)].dropna(subset=['close'])
@@ -324,6 +369,8 @@ def load_db_data():
                 df_price["date"] = pd.to_datetime(df_price["date"])
                 df_price["close"] = pd.to_numeric(df_price["close"], errors="coerce")
                 df_price["volume"] = np.nan
+                df_price["ticker"] = df_price["ticker"].map(_norm_ticker)
+                df_price = df_price.drop_duplicates(subset=["date", "ticker"], keep="last")
                 universe = set(df_factor["ticker"].unique())
                 df_price = df_price[df_price["ticker"].isin(universe)].dropna(subset=["close"])
             else:
@@ -555,27 +602,338 @@ with st.sidebar.expander("🔽 모멘텀(Momentum) 세부 비중", expanded=Fals
     f_earn_mom = w_earn_p
     f_factor_mom = w_factor_p
 
-# --- 제품 #1: 유동성(거래대금) 필터 ---
+# --- 제품 #1: 유동성(거래대금) 필터 (절대컷 + 하위% + 시총) ---
 st.sidebar.markdown("### 💧 유동성 필터")
 liq_filter_on = st.sidebar.checkbox(
-    "최소 거래대금 이상만 편입",
+    "유동성 필터 사용",
     value=False,
     key="liq_filter_on",
-    help="최근 20거래일 평균 거래대금(종가×거래량)이 기준 미만인 종목을 랭킹·백테스트에서 제외합니다.",
+    help="20일 평균 거래대금·(선택) 하위% 절사·시총 하위를 랭킹·백테스트에서 제외합니다.",
     on_change=reset_ui_state,
 )
 min_tv_eok = st.sidebar.slider(
     "최소 평균 거래대금 (억 원)",
     min_value=1,
     max_value=50,
-    value=5,
+    value=10,
     step=1,
     key="min_tv_eok",
     disabled=not liq_filter_on,
-    help="예: 5 = 일평균 약 5억 원 이상. 저유동성 종목의 급등락 위험을 줄입니다.",
+    help="권장 안전선 10억. 보수적 전략은 30~50억.",
     on_change=reset_ui_state,
 )
+# 점진적 공개: 상대·시총 컷
+liq_adv = False
+tv_bottom_pct = 0.0
+marcap_bottom_pct = 0.0
+if liq_filter_on:
+    liq_adv = st.sidebar.checkbox(
+        "고급: 하위% · 시총 필터",
+        value=False,
+        key="liq_adv_on",
+        help="시장 전체 대비 상대 절사 + 시총 꼬리 제거(테마 동전주 방어).",
+        on_change=reset_ui_state,
+    )
+if liq_filter_on and liq_adv:
+    tv_bottom_pct = (
+        st.sidebar.slider(
+            "거래대금 하위 절사 (%)",
+            min_value=0,
+            max_value=30,
+            value=20,
+            step=5,
+            key="liq_tv_bottom_pct",
+            help="0=끄기. 20이면 20일 평균 거래대금 하위 20% 제외.",
+            on_change=reset_ui_state,
+        )
+        / 100.0
+    )
+    marcap_bottom_pct = (
+        st.sidebar.slider(
+            "시총 하위 절사 (%)",
+            min_value=0,
+            max_value=20,
+            value=10,
+            step=5,
+            key="liq_marcap_bottom_pct",
+            help="0=끄기. monthly_shares가 없으면 현재 상장 시총(FDR) 근사.",
+            on_change=reset_ui_state,
+        )
+        / 100.0
+    )
 MIN_TV_WON = float(min_tv_eok) * 1e8
+_LIQ_MARCAP_MAP: dict = {}
+_LIQ_MARCAP_SRC = ""
+if liq_filter_on and marcap_bottom_pct > 0:
+    try:
+        from liquidity_benchmark import load_marcap_map
+
+        _dbp = os.path.abspath("./data_cache/quant_history.db")
+        _LIQ_MARCAP_MAP = load_marcap_map(_dbp, asof_month=None, use_fdr_fallback=True)
+        _has_ms = False
+        try:
+            _c = sqlite3.connect(_dbp, timeout=10)
+            _has_ms = (
+                _c.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='monthly_shares' LIMIT 1"
+                ).fetchone()
+                is not None
+            )
+            _c.close()
+        except Exception:
+            pass
+        _LIQ_MARCAP_SRC = "PIT(monthly_shares)" if _has_ms else "현재시총(FDR)"
+    except Exception:
+        _LIQ_MARCAP_MAP = {}
+        _LIQ_MARCAP_SRC = ""
+
+# --- 투자 룰 · 리밸런싱 주기 (버퍼 / 캡 / 월·분기·반기) ---
+from rebalance_rules import (
+    BUFFER_PRESETS,
+    REBALANCE_FREQ,
+    TradeRules,
+    resolve_buffer_preset,
+)
+
+st.sidebar.markdown("### 📐 투자 룰 · 리밸런싱")
+_buf_labels = list(BUFFER_PRESETS.keys())
+_buf_preset = st.sidebar.selectbox(
+    "버퍼(순위) 프리셋",
+    _buf_labels,
+    index=0,
+    key="buf_preset",
+    help="매수 진입 순위와 유지(퇴출) 버퍼. 기관·스마트베타에서 쓰는 churning 완화 방식입니다.",
+    on_change=reset_backtest_only,
+)
+_b_def, _h_def, _buf_help = BUFFER_PRESETS[_buf_preset]
+st.sidebar.caption(_buf_help)
+_buy_n = _b_def
+_hold_n = _h_def
+if _buf_preset == "커스텀":
+    _buy_n = st.sidebar.number_input(
+        "매수 진입 (상위 N위)",
+        min_value=5,
+        max_value=50,
+        value=10,
+        step=1,
+        key="buf_buy_n",
+        on_change=reset_backtest_only,
+    )
+    _hold_n = st.sidebar.number_input(
+        "유지 상한 (M위)",
+        min_value=int(_buy_n),
+        max_value=80,
+        value=max(20, int(_buy_n)),
+        step=1,
+        key="buf_hold_n",
+        help="M위까지는 기존 보유 유지, M+1위부터 매도.",
+        on_change=reset_backtest_only,
+    )
+_buy_n, _hold_n = resolve_buffer_preset(_buf_preset, int(_buy_n), int(_hold_n))
+
+_cap_on = st.sidebar.checkbox(
+    "단일 종목 비중 캡",
+    value=True,
+    key="stock_cap_on",
+    help="유지 구간 종목이 상한을 넘으면 초과분만 매도(Trim). 쏠림·단일종목 리스크 완화.",
+    on_change=reset_backtest_only,
+)
+_cap_pct = 15
+if _cap_on:
+    _cap_pct = st.sidebar.slider(
+        "종목 최대 비중 (%)",
+        min_value=5,
+        max_value=30,
+        value=15,
+        step=1,
+        key="stock_cap_pct",
+        on_change=reset_backtest_only,
+    )
+
+_max_pos_on = st.sidebar.checkbox(
+    "최대 보유 종목 수 제한",
+    value=False,
+    key="max_pos_on",
+    help="한도에 도달하면 신규 편입만 막고, 기존 보유 종목의 유지·비중 맞추기·매도는 그대로 둡니다.",
+    on_change=reset_backtest_only,
+)
+_max_positions = 0
+if _max_pos_on:
+    _max_positions = int(
+        st.sidebar.number_input(
+            "최대 보유 종목 수",
+            min_value=5,
+            max_value=40,
+            value=min(40, max(5, int(_buy_n))),
+            step=1,
+            key="max_positions_n",
+            help="예: 15 = 최대 15종목. 빈자리가 생길 때만 신규 매수.",
+            on_change=reset_backtest_only,
+        )
+    )
+
+_freq_labels = list(REBALANCE_FREQ.keys())
+_freq_label = st.sidebar.selectbox(
+    "리밸런싱 주기",
+    _freq_labels,
+    index=0,
+    key="rebal_freq",
+    help=(
+        "월간: 반응↑·비용·MDD↑ / 분기: 실무 균형(샤프·비용) / "
+        "반기: 저회전·가치·퀄리티에 유리. 적립금은 매월 투입, 매매만 주기 따름."
+    ),
+    on_change=reset_backtest_only,
+)
+_freq_months, _freq_help = REBALANCE_FREQ[_freq_label]
+st.sidebar.caption(_freq_help)
+
+# 기관식 확장 (점진적 공개)
+_inst_on = st.sidebar.checkbox(
+    "고급: 회전율·최소보유·ADV·섹터캡·MDD중단",
+    value=False,
+    key="inst_risk_on",
+    help="시타델/스마트베타식 거래비용·리스크 제약. 체크 시에만 아래 한도 적용.",
+    on_change=reset_backtest_only,
+)
+_turn_cap = 0.0
+_min_hold = 0
+_adv_pct = 0.0
+_sec_cap = 0.0
+_mdd_halt = 0.0
+if _inst_on:
+    _turn_on = st.sidebar.checkbox(
+        "회전율 상한",
+        value=True,
+        key="turn_cap_on",
+        help="1회 리밸런싱에서 매도+매수 명목합이 자산의 X%를 넘지 않게 비례 축소.",
+        on_change=reset_backtest_only,
+    )
+    if _turn_on:
+        _turn_cap = (
+            st.sidebar.slider(
+                "회전율 상한 (%)",
+                min_value=5,
+                max_value=50,
+                value=20,
+                step=5,
+                key="turn_cap_pct",
+                on_change=reset_backtest_only,
+            )
+            / 100.0
+        )
+    _hold_on = st.sidebar.checkbox(
+        "최소 보유 주기",
+        value=False,
+        key="min_hold_on",
+        help="매수 후 N회 리밸런싱이 지나기 전에는 순위 이탈해도 매도하지 않음.",
+        on_change=reset_backtest_only,
+    )
+    if _hold_on:
+        _min_hold = st.sidebar.slider(
+            "최소 보유 (리밸런싱 횟수)",
+            min_value=1,
+            max_value=6,
+            value=1,
+            step=1,
+            key="min_hold_n",
+            on_change=reset_backtest_only,
+        )
+    _adv_on = st.sidebar.checkbox(
+        "ADV 참여 한도 (매수)",
+        value=True,
+        key="adv_cap_on",
+        help="종목당 매수액을 20일 평균 거래대금의 X% 이하로 제한 (시장충격 완화).",
+        on_change=reset_backtest_only,
+    )
+    if _adv_on:
+        _adv_pct = (
+            st.sidebar.slider(
+                "ADV 최대 참여 (%)",
+                min_value=5,
+                max_value=50,
+                value=20,
+                step=5,
+                key="adv_cap_pct_ui",
+                help="예: 20 = 일평균 거래대금의 0.2%가 아니라 20%. 개인 규모면 보통 여유.",
+                on_change=reset_backtest_only,
+            )
+            / 100.0
+        )
+        # UI는 %로 보여주되, 실무 1~2%도 선택 가능하게 별도 미세 옵션
+        _adv_fine = st.sidebar.checkbox(
+            "ADV를 1-2% 미세 한도로 (기관식)",
+            value=False,
+            key="adv_fine_on",
+            help="체크 시 위 슬라이더 대신 1% 또는 2% 고정.",
+            on_change=reset_backtest_only,
+        )
+        if _adv_fine:
+            _adv_pct = (
+                st.sidebar.selectbox(
+                    "ADV 미세 한도",
+                    [0.01, 0.02],
+                    index=0,
+                    format_func=lambda x: f"{x*100:.0f}%",
+                    key="adv_fine_val",
+                    on_change=reset_backtest_only,
+                )
+            )
+    _sec_on = st.sidebar.checkbox(
+        "섹터 비중 캡",
+        value=False,
+        key="sector_cap_on",
+        help="단일 섹터 목표 비중이 상한을 넘으면 해당 섹터 신규 매수를 스킵.",
+        on_change=reset_backtest_only,
+    )
+    if _sec_on:
+        _sec_cap = (
+            st.sidebar.slider(
+                "섹터 최대 비중 (%)",
+                min_value=15,
+                max_value=50,
+                value=30,
+                step=5,
+                key="sector_cap_pct",
+                on_change=reset_backtest_only,
+            )
+            / 100.0
+        )
+    _mdd_on = st.sidebar.checkbox(
+        "MDD 킬스위치 (신규 매수 중단)",
+        value=False,
+        key="mdd_halt_on",
+        help="자산이 고점 대비 설정 % 이상 하락하면 그 리밸런싱에서는 매수만 막고, 매도·트림은 허용합니다.",
+        on_change=reset_backtest_only,
+    )
+    if _mdd_on:
+        _mdd_halt = st.sidebar.slider(
+            "매수 중단 MDD (%)",
+            min_value=5,
+            max_value=40,
+            value=15,
+            step=1,
+            key="mdd_halt_pct",
+            help="예: 15 = 고점 대비 -15% 이하면 신규 매수 중단.",
+            on_change=reset_backtest_only,
+        )
+    else:
+        _mdd_halt = 0.0
+
+TRADE_RULES = TradeRules(
+    buy_n=int(_buy_n),
+    hold_n=int(_hold_n),
+    stock_cap=(float(_cap_pct) / 100.0) if _cap_on else 0.0,
+    rebalance_months=int(_freq_months),
+    turnover_cap=float(_turn_cap),
+    min_hold_cycles=int(_min_hold),
+    adv_max_pct=float(_adv_pct),
+    sector_cap=float(_sec_cap),
+    mdd_halt_pct=float(_mdd_halt),
+    max_positions=int(_max_positions),
+)
+st.sidebar.caption(f"적용: {TRADE_RULES.summary()}")
+
+
 def calculate_rank(df):
     """
     결측(NaN) 처리:
@@ -584,8 +942,9 @@ def calculate_rank(df):
     - 예전에 fillna(0) 후 PER 오름차순 랭크하면 결측(=0)이 1등이 되는 버그가 있었음.
     """
     def _wr(series, ascending, weight):
+        # weight==0 이면 float 0.0 을 더하면 val_rank 전체가 float 가 되어 .rank() 실패
         if weight == 0:
-            return 0.0
+            return pd.Series(0.0, index=df.index)
         return series.rank(ascending=ascending, method="average", na_option="bottom") * weight
 
     val_rank = (
@@ -635,16 +994,12 @@ def calculate_rank(df):
     return df.sort_values(by="종합점수", ascending=False).reset_index(drop=True)
 
 
-def assign_trade_actions(df_ranked: pd.DataFrame) -> pd.DataFrame:
-    """1~10 매수 / 11~20 유지 / 21~50 매도 / 그 외 관망"""
-    out = df_ranked.copy()
-    if "순위" not in out.columns:
-        out.insert(0, "순위", np.arange(1, len(out) + 1))
-    out["액션"] = "관망"
-    out.loc[out["순위"] <= 10, "액션"] = "매수"
-    out.loc[(out["순위"] >= 11) & (out["순위"] <= 20), "액션"] = "유지"
-    out.loc[(out["순위"] >= 21) & (out["순위"] <= 50), "액션"] = "매도"
-    return out
+def assign_trade_actions(df_ranked: pd.DataFrame, rules=None) -> pd.DataFrame:
+    """버퍼 룰에 따른 매수/유지/매도 액션."""
+    from rebalance_rules import TradeRules, assign_actions_by_rules
+
+    r = rules or TradeRules()
+    return assign_actions_by_rules(df_ranked, r)
 
 
 def load_portfolio_lock():
@@ -674,21 +1029,34 @@ def save_portfolio_lock(df_locked: pd.DataFrame, factor_month: str, weights: dic
 
 # 유동성 필터 적용 (최신 팩터월 기준)
 _liq_n_before = len(df_main)
+_liq_note = "유동성 필터 꺼짐"
 if liq_filter_on:
     try:
-        from liquidity_benchmark import liquid_tickers
+        from liquidity_benchmark import describe_liq_filter, filter_liquid_universe
 
         asof_liq = None
         if not df_price_all.empty:
             asof_liq = df_price_all["date"].max()
-        ok = liquid_tickers(
-            df_price_all, MIN_TV_WON, asof=asof_liq, lookback=20
+        ok = filter_liquid_universe(
+            df_price_all,
+            min_avg_tv_won=MIN_TV_WON,
+            tv_bottom_pct=tv_bottom_pct,
+            marcap_by_ticker=_LIQ_MARCAP_MAP or None,
+            marcap_bottom_pct=marcap_bottom_pct,
+            asof=asof_liq,
+            lookback=20,
+            universe=set(df_main["ticker"].astype(str)),
+        )
+        _liq_note = describe_liq_filter(
+            min_tv_eok=min_tv_eok,
+            tv_bottom_pct=tv_bottom_pct,
+            marcap_bottom_pct=marcap_bottom_pct,
+            marcap_source=_LIQ_MARCAP_SRC,
         )
         if ok:
             df_main = df_main[df_main["ticker"].isin(ok)].copy()
             st.sidebar.caption(
-                f"유동성 통과: **{len(df_main):,}** / {_liq_n_before:,} "
-                f"(≥{min_tv_eok}억, 20일 평균)"
+                f"유동성 통과: **{len(df_main):,}** / {_liq_n_before:,} · {_liq_note}"
             )
         else:
             st.sidebar.warning("거래량 데이터 부족 — 유동성 필터를 적용하지 못했습니다.")
@@ -697,7 +1065,7 @@ if liq_filter_on:
 
 df_result = calculate_rank(df_main.copy())
 df_result.insert(0, '순위', df_result.index + 1)
-df_result = assign_trade_actions(df_result)
+df_result = assign_trade_actions(df_result, TRADE_RULES)
 
 # 제품 #6: AI 매크로 직후 월간 보고서 생성
 if st.session_state.get("pending_monthly_report"):
@@ -746,11 +1114,7 @@ if st.session_state.get("pending_monthly_report"):
                 "mom6": st.session_state.get("sub_mom6", 40),
                 "mom12": st.session_state.get("sub_mom12", 40),
             }
-            liq_note = (
-                f"일평균 거래대금 ≥ {min_tv_eok}억 적용 중"
-                if liq_filter_on
-                else "유동성 필터 꺼짐"
-            )
+            liq_note = _liq_note if liq_filter_on else "유동성 필터 꺼짐"
             cols_rep = [
                 c
                 for c in (
@@ -773,7 +1137,7 @@ if st.session_state.get("pending_monthly_report"):
 def _show_monthly_report_dialog():
     md = st.session_state.get("monthly_report_md") or ""
     st.markdown(md)
-    if _IS_LOGGED_IN:
+    if _CAN_USE_MEMBER_FEATURES:
         st.download_button(
             "⬇️ 마크다운 다운로드",
             data=md.encode("utf-8"),
@@ -1008,7 +1372,7 @@ if st.session_state.step1_unlocked:
     lc1, lc2 = st.columns([2, 1])
     with lc1:
         if st.button("🔒 현재 종합점수 기준으로 이번 달 포트폴리오 확정", width="stretch"):
-            if not _IS_LOGGED_IN:
+            if not _CAN_USE_MEMBER_FEATURES:
                 st.warning("🔒 포트폴리오 확정은 로그인 후 이용할 수 있습니다. 우측 상단에서 가입/로그인해 주세요.")
             else:
                 save_portfolio_lock(
@@ -1018,7 +1382,8 @@ if st.session_state.step1_unlocked:
                         "value": round(real_w_val, 4),
                         "quality": round(real_w_qual, 4),
                         "momentum": round(real_w_mom, 4),
-                        "user": (st.session_state.auth_user or {}).get("email"),
+                        "user": (st.session_state.auth_user or {}).get("email")
+                        or ("beta-guest" if _BETA_SKIP_AUTH_GATES else None),
                     },
                 )
                 st.success(f"확정 완료 — 기준월 {latest_date}")
@@ -1033,21 +1398,50 @@ if st.session_state.step1_unlocked:
 
     if lock and lock.get("rows"):
         df_locked = pd.DataFrame(lock["rows"])
+        # 확정 순위·종목은 유지하되, 매수/유지/매도 라벨은 현재 사이드바 버퍼 룰로 재부여
+        if "순위" in df_locked.columns:
+            df_locked = assign_trade_actions(df_locked, TRADE_RULES)
         w = lock.get("weights") or {}
         st.info(
             f"확정 시각 **{lock.get('locked_at', '-')}** · 팩터월 **{lock.get('factor_month', '-')}** · "
             f"비중 V{w.get('value', 0)*100:.0f}/Q{w.get('quality', 0)*100:.0f}/M{w.get('momentum', 0)*100:.0f}"
         )
+        st.caption(
+            f"액션 구간은 지금 사이드바 룰 기준입니다: **{TRADE_RULES.summary()}** "
+            "(종목 구성 자체를 바꾸려면 다시 확정하세요.)"
+        )
         show_lock_cols = [c for c in display_cols if c in df_locked.columns]
-        tab_buy, tab_hold, tab_sell = st.tabs(["매수 (1~10)", "유지 (11~20)", "매도 후보 (21~50)"])
+        tab_buy, tab_hold, tab_sell = st.tabs([
+            f"매수 (1-{TRADE_RULES.buy_n})",
+            f"유지 ({TRADE_RULES.buy_n+1}-{TRADE_RULES.hold_n})",
+            f"매도 후보 ({TRADE_RULES.hold_n+1}-{TRADE_RULES.sell_preview_to})",
+        ])
         with tab_buy:
-            buy_df = df_locked[df_locked["액션"] == "매수"] if "액션" in df_locked.columns else df_locked.head(10)
+            buy_df = (
+                df_locked[df_locked["액션"] == "매수"]
+                if "액션" in df_locked.columns
+                else df_locked[df_locked["순위"] <= TRADE_RULES.buy_n]
+            )
             st.dataframe(buy_df[show_lock_cols], width="stretch", hide_index=True)
         with tab_hold:
-            hold_df = df_locked[df_locked["액션"] == "유지"] if "액션" in df_locked.columns else df_locked.iloc[10:20]
+            hold_df = (
+                df_locked[df_locked["액션"] == "유지"]
+                if "액션" in df_locked.columns
+                else df_locked[
+                    (df_locked["순위"] > TRADE_RULES.buy_n)
+                    & (df_locked["순위"] <= TRADE_RULES.hold_n)
+                ]
+            )
             st.dataframe(hold_df[show_lock_cols], width="stretch", hide_index=True)
         with tab_sell:
-            sell_df = df_locked[df_locked["액션"] == "매도"] if "액션" in df_locked.columns else df_locked.iloc[20:50]
+            sell_df = (
+                df_locked[df_locked["액션"] == "매도"]
+                if "액션" in df_locked.columns
+                else df_locked[
+                    (df_locked["순위"] > TRADE_RULES.hold_n)
+                    & (df_locked["순위"] <= TRADE_RULES.sell_preview_to)
+                ]
+            )
             st.dataframe(sell_df[show_lock_cols], width="stretch", hide_index=True)
     else:
         st.warning("아직 확정된 운용 포트폴리오가 없습니다. 위에서 **확정**을 누르면 이번 달 기준점이 잠깁니다.")
@@ -1064,8 +1458,8 @@ if st.session_state.step1_unlocked:
         show_df = df_result.head(20)[display_cols].copy()
         st.dataframe(show_df, width="stretch", hide_index=True)
         st.caption(
-            "✔️ **종합점수 = 가치×비중 + 우량×비중 + 모멘텀×비중** · 정렬: 종합점수 높은 순 · "
-            "액션 미리보기: 1~10 매수 / 11~20 유지 / 21~50 매도"
+            f"✔️ **종합점수 = 가치×비중 + 우량×비중 + 모멘텀×비중** · 정렬: 종합점수 높은 순 · "
+            f"액션: {TRADE_RULES.summary()}"
         )
 
         # 확정 대비 변동 (있으면)
@@ -1109,9 +1503,12 @@ if st.session_state.step1_unlocked:
     
     st.divider()
     st.markdown("### 📈 Step 2: 실전 다이내믹 시계열 백테스터")
-    st.info("💡 **알림**: 팩터는 월별 롤링 리밸런싱, **자산 평가는 매일 종가(일별 주가)**로 반영합니다. 적립금은 매월 첫 거래일에만 투입됩니다.")
-    st.caption("✔️ 투자 룰(종합점수 순위): 1~10위 매수 / 11~20위 유지(최대 비중 15% 캡) / 21위 밖 매도 · 백테스트는 확정 규칙과 동일하게 **월 1회**만 교체")
-    st.caption("💸 수수료 및 슬리피지: 매수 시 0.15%, 매도 시 0.30% (세금 포함) 적용")
+    st.info(
+        "💡 **알림**: 팩터 스냅샷은 월별이며, **매매 리밸런싱 주기는 사이드바**(월/분기/반기)를 따릅니다. "
+        "자산 평가는 매일 종가 · 적립금은 매월 첫 거래일 투입입니다."
+    )
+    st.caption(f"✔️ 투자 룰: {TRADE_RULES.summary()} · 백테스트는 사이드바와 동일 규칙")
+    st.caption("💸 수수료 및 슬리피지: 매수 시 0.15%, 매도 시 0.30% (세금 포함) 적용 · 적립금은 매월 투입, 매매만 리밸런싱 주기")
     
     bc1, bc2, bc3 = st.columns(3)
     with bc1:
@@ -1131,11 +1528,30 @@ if st.session_state.step1_unlocked:
                 st.cache_data.clear()
                 st.rerun()
         else:
-            with st.spinner("일별 주가 Mark-to-Market + 월간 다이내믹 리밸런싱 연산 중..."):
-                
+            with st.spinner("일별 주가 Mark-to-Market + 주기별 다이내믹 리밸런싱 연산 중..."):
+                from rebalance_rules import (
+                    apply_min_hold_to_sells,
+                    clip_trades_by_turnover,
+                    filter_buys_by_max_positions,
+                    filter_buys_by_sector_cap,
+                    is_calendar_rebalance_month,
+                    max_buy_value_by_adv,
+                )
+                from liquidity_benchmark import avg_trading_value as _avg_tv
+
                 FEE_BUY = 0.0015
                 FEE_SELL = 0.0030
-                CAP_LIMIT = 0.15
+                CAP_LIMIT = TRADE_RULES.stock_cap
+                BUY_N = TRADE_RULES.buy_n
+                HOLD_N = TRADE_RULES.hold_n
+                TARGET_W = TRADE_RULES.target_weight
+                REBAL_M = TRADE_RULES.rebalance_months
+                TURN_CAP = TRADE_RULES.turnover_cap
+                MIN_HOLD = TRADE_RULES.min_hold_cycles
+                ADV_PCT = TRADE_RULES.adv_max_pct
+                SEC_CAP = TRADE_RULES.sector_cap
+                MDD_HALT = TRADE_RULES.mdd_halt_pct
+                MAX_POS = TRADE_RULES.max_positions
                 
                 df_history = df_all.copy()
                 val_hist = (
@@ -1235,13 +1651,27 @@ if st.session_state.step1_unlocked:
                     )
                 available_dates = [d for d in all_dates if d >= start_date]
                 
-                price_pivot = (
+                _px_for_pivot = (
                     df_price_all[df_price_all['date'] >= start_date]
+                    .drop_duplicates(subset=['date', 'ticker'], keep='last')
+                )
+                price_pivot = (
+                    _px_for_pivot
                     .pivot(index='date', columns='ticker', values='close')
                     .sort_index()
                     .ffill()
                     .fillna(0)
                 )
+
+                # 주가 전처리 1회 (리밸런싱마다 전체 to_datetime/copy 방지)
+                _px = df_price_all.drop_duplicates(subset=["date", "ticker"], keep="last").copy()
+                _px["date"] = pd.to_datetime(_px["date"])
+                _px = _px[_px["date"] >= start_date]
+                if "volume" in _px.columns:
+                    _px["close"] = pd.to_numeric(_px["close"], errors="coerce")
+                    _px["volume"] = pd.to_numeric(_px["volume"], errors="coerce")
+                _liq_ym_cache: dict = {}
+                _tv_ym_cache: dict = {}
                 
                 cash = init_cap * 10000
                 portfolio = {}
@@ -1250,96 +1680,233 @@ if st.session_state.step1_unlocked:
                 date_history = []
                 total_invested = cash
                 first_buy_price = {}
+                _bt_buy_fills = 0
+                _bt_buy_skips_px = 0
+                _bt_buy_skips_slot = 0
+                _bt_max_positions = 0
+
+                def _px_at(prices, ticker: str) -> float:
+                    """Series/dict에서 종가 안전 조회 (결측·0 제외)."""
+                    t = str(ticker)
+                    try:
+                        if hasattr(prices, "index") and t in prices.index:
+                            v = prices[t]
+                        elif hasattr(prices, "get"):
+                            v = prices.get(t, 0)
+                        else:
+                            return 0.0
+                        if v is None or (isinstance(v, float) and pd.isna(v)):
+                            return 0.0
+                        fv = float(v)
+                        return fv if fv > 0 else 0.0
+                    except Exception:
+                        return 0.0
                 
                 last_ym = None
-                top_10, mid_10 = [], []
-                
+                buy_list, hold_list = [], []
+                entry_cycle = {}
+                rebal_cycle = 0
+                peak_asset = cash
+                _sector_of = {}
+                if "섹터" in df_all.columns and "ticker" in df_all.columns:
+                    _tmp = df_all.dropna(subset=["ticker"]).drop_duplicates("ticker")
+                    for _, row in _tmp.iterrows():
+                        _sector_of[str(row["ticker"])] = str(row["섹터"]) if pd.notna(row["섹터"]) else "기타"
+                elif "sector" in df_all.columns and "ticker" in df_all.columns:
+                    _tmp = df_all.dropna(subset=["ticker"]).drop_duplicates("ticker")
+                    for _, row in _tmp.iterrows():
+                        _sector_of[str(row["ticker"])] = str(row["sector"]) if pd.notna(row["sector"]) else "기타"
+
                 for i, date in enumerate(available_dates):
                     if date not in price_pivot.index:
                         continue
                     current_prices = price_pivot.loc[date]
-                    ym = pd.Timestamp(date).strftime('%Y-%m')
-                    
-                    # 매월 첫 거래일: 적립금 투입 + 팩터 리밸런싱
-                    is_rebalance = (last_ym is None) or (ym != last_ym)
-                    if is_rebalance:
+                    ym = pd.Timestamp(date).strftime("%Y-%m")
+
+                    is_new_month = (last_ym is None) or (ym != last_ym)
+                    is_rebalance = False
+                    if is_new_month:
                         if last_ym is not None:
                             cash += monthly_cap * 10000
                             total_invested += monthly_cap * 10000
                         last_ym = ym
-                        
-                        past_data = df_history[df_history['date'] <= ym]
-                        if not past_data.empty:
-                            latest_past_date = past_data['date'].max()
-                            monthly_data = df_history[df_history['date'] == latest_past_date].copy()
-                            # #1: 리밸런싱 시점 유동성 필터 후 재순위
-                            if liq_filter_on:
-                                try:
-                                    from liquidity_benchmark import liquid_tickers as _liq_tk
+                        is_rebalance = is_calendar_rebalance_month(ym, REBAL_M) or (
+                            len(buy_list) == 0
+                        )
 
-                                    ok_m = _liq_tk(
-                                        df_price_all,
-                                        MIN_TV_WON,
+                        if is_rebalance:
+                            past_data = df_history[df_history["date"] <= ym]
+                            if not past_data.empty:
+                                latest_past_date = past_data["date"].max()
+                                monthly_data = df_history[df_history["date"] == latest_past_date].copy()
+                                if liq_filter_on:
+                                    try:
+                                        from liquidity_benchmark import (
+                                            filter_liquid_universe as _liq_filt,
+                                        )
+                                        if ym in _liq_ym_cache:
+                                            ok_m = _liq_ym_cache[ym]
+                                        else:
+                                            ok_m = _liq_filt(
+                                                _px,
+                                                min_avg_tv_won=MIN_TV_WON,
+                                                tv_bottom_pct=tv_bottom_pct,
+                                                marcap_by_ticker=_LIQ_MARCAP_MAP or None,
+                                                marcap_bottom_pct=marcap_bottom_pct,
+                                                asof=pd.Timestamp(date),
+                                                lookback=20,
+                                                universe=set(monthly_data["ticker"].astype(str)),
+                                            )
+                                            _liq_ym_cache[ym] = ok_m
+                                        if ok_m:
+                                            monthly_data = monthly_data[
+                                                monthly_data["ticker"].isin(ok_m)
+                                            ].copy()
+                                            monthly_data = monthly_data.sort_values(
+                                                "종합점수", ascending=False
+                                            )
+                                            monthly_data["Rank"] = np.arange(1, len(monthly_data) + 1)
+                                    except Exception:
+                                        pass
+                                buy_list = monthly_data[monthly_data["Rank"] <= BUY_N]["ticker"].tolist()
+                                hold_list = monthly_data[
+                                    (monthly_data["Rank"] > BUY_N) & (monthly_data["Rank"] <= HOLD_N)
+                                ]["ticker"].tolist()
+
+                    stock_value = sum(portfolio[t] * _px_at(current_prices, t) for t in portfolio)
+                    total_asset = cash + stock_value
+                    if total_asset > peak_asset:
+                        peak_asset = total_asset
+
+                    if is_rebalance and buy_list:
+                        rebal_cycle += 1
+                        avg_tv_map = {}
+                        if ADV_PCT > 0:
+                            try:
+                                # 매수 후보만 ADV 계산 (전체 유니버스 스캔 방지)
+                                _cand = set(str(t) for t in buy_list)
+                                _ck = (ym, tuple(sorted(_cand)))
+                                if _ck in _tv_ym_cache:
+                                    avg_tv_map = _tv_ym_cache[_ck]
+                                else:
+                                    _s = _avg_tv(
+                                        _px,
                                         asof=pd.Timestamp(date),
                                         lookback=20,
+                                        tickers=_cand,
                                     )
-                                    if ok_m:
-                                        monthly_data = monthly_data[
-                                            monthly_data["ticker"].isin(ok_m)
-                                        ].copy()
-                                        monthly_data = monthly_data.sort_values(
-                                            "종합점수", ascending=False
-                                        )
-                                        monthly_data["Rank"] = np.arange(
-                                            1, len(monthly_data) + 1
-                                        )
-                                except Exception:
-                                    pass
-                            top_10 = monthly_data[monthly_data['Rank'] <= 10]['ticker'].tolist()
-                            mid_10 = monthly_data[(monthly_data['Rank'] > 10) & (monthly_data['Rank'] <= 20)]['ticker'].tolist()
-                    
-                    # 일별 Mark-to-Market
-                    stock_value = sum(portfolio[t] * current_prices.get(t, 0) for t in portfolio)
-                    total_asset = cash + stock_value
-                    
-                    # 리밸런싱일만 매매 실행
-                    if is_rebalance and top_10:
+                                    avg_tv_map = {
+                                        str(k): float(v) for k, v in _s.items() if pd.notna(v)
+                                    }
+                                    _tv_ym_cache[_ck] = avg_tv_map
+                            except Exception:
+                                avg_tv_map = {}
+
+                        raw_sells = {
+                            t for t in portfolio
+                            if t not in buy_list and t not in hold_list
+                        }
+                        to_sell, protected = apply_min_hold_to_sells(
+                            raw_sells, entry_cycle, rebal_cycle, MIN_HOLD
+                        )
+                        hold_eff = list(hold_list) + list(protected)
+
+                        bl = buy_list
+                        if SEC_CAP > 0 and _sector_of:
+                            bl = filter_buys_by_sector_cap(
+                                buy_list, portfolio, current_prices, total_asset,
+                                _sector_of, SEC_CAP, TARGET_W,
+                            )
+
+                        sell_plan = {}
+                        for t in to_sell:
+                            px = _px_at(current_prices, t)
+                            if px > 0 and t in portfolio:
+                                sell_plan[t] = portfolio[t] * px
                         for t in list(portfolio.keys()):
-                            price = current_prices.get(t, 0)
-                            if price == 0:
+                            if t not in hold_eff:
                                 continue
-                            weight = (portfolio[t] * price) / total_asset if total_asset > 0 else 0
-                            if t not in top_10 and t not in mid_10:
-                                cash += portfolio[t] * price * (1 - FEE_SELL)
+                            px = _px_at(current_prices, t)
+                            if px <= 0 or CAP_LIMIT <= 0:
+                                continue
+                            w = (portfolio[t] * px) / total_asset if total_asset > 0 else 0
+                            if w > CAP_LIMIT:
+                                sell_plan[t] = sell_plan.get(t, 0) + (w - CAP_LIMIT) * total_asset
+
+                        buy_plan = {}
+                        for t in bl:
+                            px = _px_at(current_prices, t)
+                            if px <= 0:
+                                _bt_buy_skips_px += 1
+                                continue
+                            cw = (portfolio.get(t, 0) * px) / total_asset if total_asset > 0 else 0
+                            need = max(0.0, (TARGET_W - cw) * total_asset)
+                            if ADV_PCT > 0:
+                                adv_lim = max_buy_value_by_adv(t, avg_tv_map, ADV_PCT)
+                                if adv_lim is not None:
+                                    need = min(need, float(adv_lim))
+                            if need > px:
+                                buy_plan[t] = need
+
+                        sell_plan, buy_plan = clip_trades_by_turnover(
+                            sell_plan, buy_plan, total_asset, TURN_CAP
+                        )
+
+                        # MDD 킬스위치: 고점 대비 낙폭 한도 초과 시 신규 매수 중단
+                        if MDD_HALT > 0 and peak_asset > 0:
+                            dd_pct = (1.0 - total_asset / peak_asset) * 100.0
+                            if dd_pct >= MDD_HALT:
+                                buy_plan = {}
+
+                        for t, target_val in sell_plan.items():
+                            px = _px_at(current_prices, t)
+                            if px <= 0 or t not in portfolio:
+                                continue
+                            sell_shares = min(int(portfolio[t]), int(target_val / px))
+                            if sell_shares <= 0:
+                                continue
+                            cash += sell_shares * px * (1 - FEE_SELL)
+                            portfolio[t] -= sell_shares
+                            if portfolio[t] <= 0:
                                 del portfolio[t]
-                            elif t in mid_10 and weight > CAP_LIMIT:
-                                excess_value = (weight - CAP_LIMIT) * total_asset
-                                sell_shares = int(excess_value / price)
-                                if sell_shares > 0:
-                                    cash += sell_shares * price * (1 - FEE_SELL)
-                                    portfolio[t] -= sell_shares
-                        
-                        stock_value = sum(portfolio[t] * current_prices.get(t, 0) for t in portfolio)
+                                entry_cycle.pop(t, None)
+
+                        stock_value = sum(portfolio[t] * _px_at(current_prices, t) for t in portfolio)
                         total_asset = cash + stock_value
-                        target_weight = 0.10
-                        
-                        for t in top_10:
-                            price = current_prices.get(t, 0)
-                            if price == 0:
+
+                        # 매도 반영 후 슬롯 기준으로 신규 편입만 제한
+                        if MAX_POS > 0 and buy_plan:
+                            _ordered = [t for t in bl if t in buy_plan]
+                            _allowed = set(
+                                filter_buys_by_max_positions(_ordered, portfolio, MAX_POS)
+                            )
+                            _bt_buy_skips_slot += sum(
+                                1
+                                for t in buy_plan
+                                if t not in _allowed and t not in portfolio
+                            )
+                            buy_plan = {t: v for t, v in buy_plan.items() if t in _allowed}
+
+                        for t, budget in buy_plan.items():
+                            px = _px_at(current_prices, t)
+                            if px <= 0:
                                 continue
-                            current_weight = (portfolio.get(t, 0) * price) / total_asset if total_asset > 0 else 0
-                            if current_weight < target_weight:
-                                buy_value = (target_weight - current_weight) * total_asset
-                                actual_buy = min(buy_value, cash)
-                                if actual_buy > price:
-                                    buy_shares = int(actual_buy / (price * (1 + FEE_BUY)))
-                                    if buy_shares > 0:
-                                        portfolio[t] = portfolio.get(t, 0) + buy_shares
-                                        cash -= buy_shares * price * (1 + FEE_BUY)
-                                        if t not in first_buy_price:
-                                            first_buy_price[t] = price
-                    
-                    final_stock_value = sum(portfolio[t] * current_prices.get(t, 0) for t in portfolio)
+                            actual = min(budget, cash)
+                            if actual <= px:
+                                continue
+                            buy_shares = int(actual / (px * (1 + FEE_BUY)))
+                            if buy_shares <= 0:
+                                continue
+                            portfolio[t] = portfolio.get(t, 0) + buy_shares
+                            cash -= buy_shares * px * (1 + FEE_BUY)
+                            _bt_buy_fills += 1
+                            if t not in entry_cycle:
+                                entry_cycle[t] = rebal_cycle
+                            if t not in first_buy_price:
+                                first_buy_price[t] = px
+
+                    final_stock_value = sum(portfolio[t] * _px_at(current_prices, t) for t in portfolio)
+                    _bt_max_positions = max(_bt_max_positions, len(portfolio))
                     date_history.append(pd.Timestamp(date))
                     asset_history.append(cash + final_stock_value)
                     invested_history.append(total_invested)
@@ -1359,6 +1926,36 @@ if st.session_state.step1_unlocked:
                 df_asset['HWM'] = df_asset['Total_Value'].cummax()
                 df_asset['Drawdown'] = (df_asset['Total_Value'] / df_asset['HWM'] - 1) * 100
                 mdd = df_asset['Drawdown'].min()
+
+                # 진단: 적립금만 쌓인 직선(미매수) 감지
+                _corr = float(
+                    df_asset["Total_Value"].corr(df_asset["Total_Invested"])
+                ) if len(df_asset) > 3 else 1.0
+                _ret_std = float(df_asset["Total_Value"].pct_change().std() or 0)
+                if _bt_buy_fills == 0 or _bt_max_positions == 0:
+                    st.error(
+                        f"⚠️ 백테스트에서 주식 매수가 거의/전혀 없었습니다 "
+                        f"(체결 {_bt_buy_fills}회, 최대 보유 {_bt_max_positions}종목, "
+                        f"가격0 스킵 {_bt_buy_skips_px}). "
+                        "자산 곡선이 누적 원금과 같은 직선으로 보입니다. "
+                        "유동성·ADV 한도를 끄거나 완화한 뒤 다시 실행해 보세요."
+                    )
+                elif _corr > 0.995 and _ret_std < 0.002:
+                    st.warning(
+                        f"자산 곡선이 누적 원금과 거의 같습니다 "
+                        f"(상관 {_corr:.3f}, 일간변동 {_ret_std:.4f}, 매수체결 {_bt_buy_fills}회). "
+                        "제약이 과도하거나 주가 매칭이 약한 구간일 수 있습니다."
+                    )
+                else:
+                    st.caption(
+                        f"시뮬레이션 요약: 매수체결 {_bt_buy_fills}회 · "
+                        f"최대 보유 {_bt_max_positions}종목 · 가격결측 스킵 {_bt_buy_skips_px}"
+                        + (
+                            f" · 슬롯제한 신규스킵 {_bt_buy_skips_slot}"
+                            if MAX_POS > 0
+                            else ""
+                        )
+                    )
                 
                 show_volatility = st.toggle(
                     "🚨 주요 하락장/고변동성 구간 차트에 음영 표시 (MDD -10% 기준)",

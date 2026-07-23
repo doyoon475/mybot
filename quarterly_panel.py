@@ -400,6 +400,16 @@ def _write_progress_file(
                 f"current_ticker={ticker}\n"
                 f"updated={time.strftime('%Y-%m-%d %H:%M:%S')}\n"
             )
+        # 터미널 tail용: 한 줄씩 append (Get-Content -Wait 로 실시간 확인)
+        live = os.path.join(os.path.dirname(path), "c9_live.log")
+        line = (
+            f"C9 [{i}/{n} {pct:5.1f}%] "
+            f"saved={saved} skip={skipped} empty={empty} err={errors} "
+            f"elapsed={_fmt_duration(elapsed)} ETA={_fmt_duration(eta)} "
+            f"now={ticker}  {time.strftime('%H:%M:%S')}\n"
+        )
+        with open(live, "a", encoding="utf-8") as f:
+            f.write(line)
     except OSError:
         pass
 
@@ -434,7 +444,11 @@ def fetch_panel(
     )
     print(f"📄 진행률 파일 → {progress_path}", flush=True)
     print(
-        "  (터미널에 진행 바가 갱신됩니다. 25종마다 checkpoint 한 줄 출력)",
+        f"📺 실시간 로그 → {os.path.join(os.path.dirname(progress_path), 'c9_live.log')}",
+        flush=True,
+    )
+    print(
+        "  (터미널: Get-Content data_cache\\c9_live.log -Wait -Tail 5)",
         flush=True,
     )
     saved = 0

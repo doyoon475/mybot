@@ -35,6 +35,11 @@ if hasattr(sys.stdout, "reconfigure"):
 DB_PATH = os.path.abspath("./data_cache/quant_history.db")
 DART_CACHE_DIR = os.path.abspath("./data_cache/dart_cache")
 
+
+class DartQuotaExceeded(RuntimeError):
+    """OpenDART status 020 — 일일 사용량 한도 초과."""
+
+
 # DART 계정명 → 내부 키 (부분 일치)
 ACCOUNT_ALIASES = {
     "revenue": ["매출액", "수익(매출액)", "영업수익", "매출"],
@@ -206,6 +211,46 @@ def _cache_path_all(ticker: str, year: int) -> str:
     return os.path.join(DART_CACHE_DIR, f"{_dart_code(ticker)}_{year}_all.parquet")
 
 
+def _check_dart_status(jo: dict) -> None:
+    """OpenDART JSON 응답의 status 검사. 020이면 즉시 중단용 예외."""
+    if not isinstance(jo, dict):
+        return
+    status = str(jo.get("status", ""))
+    if status == "020":
+        raise DartQuotaExceeded(
+            jo.get("message") or "DART 사용한도 초과(status=020)"
+        )
+
+
+def _finstate_all_request(
+    api_key: str,
+    corp_code: str,
+    bsns_year: int,
+    reprt_code: str = "11011",
+    fs_div: str = "CFS",
+) -> pd.DataFrame:
+    """fnlttSinglAcntAll — 020을 조용히 삼키지 않고 감지."""
+    import requests
+
+    url = "https://opendart.fss.or.kr/api/fnlttSinglAcntAll.json"
+    params = {
+        "crtfc_key": api_key,
+        "corp_code": corp_code,
+        "bsns_year": bsns_year,
+        "reprt_code": reprt_code,
+        "fs_div": fs_div,
+    }
+    try:
+        r = requests.get(url, params=params, timeout=30)
+        jo = r.json()
+    except Exception:
+        return pd.DataFrame()
+    _check_dart_status(jo)
+    if "list" not in jo:
+        return pd.DataFrame()
+    return pd.DataFrame(jo["list"])
+
+
 def fetch_finstate_cached(dart, ticker: str, year: int, sleep_sec: float = 1.0) -> pd.DataFrame:
     path = _cache_path(ticker, year)
     if os.path.exists(path):
@@ -262,15 +307,6 @@ def fetch_finstate_all_cached(
     if dart is None:
         return pd.DataFrame()
 
-    try:
-        from OpenDartReader import dart_finstate
-    except Exception:
-        try:
-            import OpenDartReader.dart_finstate as dart_finstate
-        except Exception as e:
-            print(f"  ⚠️ dart_finstate import 실패: {e}")
-            return pd.DataFrame()
-
     time.sleep(max(0.3, sleep_sec))
     code = _dart_code(ticker)
     # corp_code 조회 (OpenDartReader 내부 코드)
@@ -286,9 +322,11 @@ def fetch_finstate_all_cached(
     for reprt in ("11011", "11014", "11012", "11013"):
         for fs_div in ("CFS", "OFS"):
             try:
-                df = dart_finstate.finstate_all(
+                df = _finstate_all_request(
                     dart.api_key, corp_code, year, reprt_code=reprt, fs_div=fs_div
                 )
+            except DartQuotaExceeded:
+                raise
             except Exception:
                 continue
             if df is None or not isinstance(df, pd.DataFrame) or df.empty:
