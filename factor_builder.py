@@ -184,13 +184,25 @@ def _pick_account(df: pd.DataFrame, keys: List[str]) -> Optional[float]:
     return None
 
 
-def _init_dart():
+def _dart_api_keys() -> List[str]:
+    """주 키 + 예비 키들 (BACKUP, BACKUP_2, … 중복 제거)."""
+    keys: List[str] = []
+    env_names = ["DART_API_KEY", "DART_API_KEY_BACKUP"]
+    env_names += [f"DART_API_KEY_BACKUP_{i}" for i in range(2, 6)]
+    for env in env_names:
+        k = (os.getenv(env) or "").strip()
+        if k and k not in keys:
+            keys.append(k)
+    return keys
+
+
+def _init_dart(api_key: Optional[str] = None):
     try:
         import OpenDartReader
     except ImportError:
         print("❌ OpenDartReader 미설치: pip install OpenDartReader")
         return None
-    key = os.getenv("DART_API_KEY")
+    key = (api_key or os.getenv("DART_API_KEY") or "").strip()
     if not key:
         print("❌ DART_API_KEY 없음 (.env 또는 GitHub Secrets)")
         return None

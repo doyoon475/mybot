@@ -23,6 +23,7 @@ import pandas as pd
 from factor_builder import (
     DartQuotaExceeded,
     _connect,
+    _dart_api_keys,
     _init_dart,
     _norm_ticker,
     compute_accrual,
@@ -303,6 +304,13 @@ def _load_month_master(conn, month: str, limit: Optional[int]) -> pd.DataFrame:
 
 
 def main():
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except Exception:
+        pass
+
     p = argparse.ArgumentParser()
     p.add_argument("--month", type=str, default=None, help="YYYY-MM (기본: DB 최신월)")
     p.add_argument("--all-months", action="store_true", help="monthly_factor 전 월 백필")
@@ -375,10 +383,20 @@ def main():
     if not listing.empty and "marcap" in listing.columns:
         marcap_map = listing.set_index("ticker")["marcap"].to_dict()
 
-    dart = _init_dart()
+    dart_keys = _dart_api_keys()
+    if not dart_keys:
+        print("❌ DART_API_KEY 없음 — .env에 주 키(및 선택) DART_API_KEY_BACKUP 설정")
+        return
+    key_i = 0
+    dart = _init_dart(dart_keys[key_i])
     if dart is None:
         print("❌ DART 초기화 실패 — API 키/패키지 확인")
         return
+    if len(dart_keys) > 1:
+        print(
+            f"🔑 DART 키 {len(dart_keys)}개 (주+예비). 020 시 자동 전환합니다.",
+            flush=True,
+        )
 
     skip_filled = not args.force
     total = len(months)
@@ -392,14 +410,17 @@ def main():
 
     t0 = time.time()
     sum_acc = sum_fcf = 0
-    for i, ym in enumerate(months, 1):
+    i = 0
+    while i < total:
+        ym = months[i]
+        month_i = i + 1
         fy = _fin_year(ym, args.year if not args.all_months else None)
         master = _load_month_master(conn, ym, args.limit)
-        if args.limit and i == 1:
+        if args.limit and month_i == 1:
             print(f"🔬 limit={args.limit}", flush=True)
-        _log_line(f"—— [{i}/{total}] {ym} fin_year={fy} tickers={len(master)} ——")
+        _log_line(f"—— [{month_i}/{total}] {ym} fin_year={fy} tickers={len(master)} ——")
         _write_progress(
-            done=max(0, i - 1),
+            done=max(0, month_i - 1),
             total=total,
             ok_acc=sum_acc,
             ok_fcf=sum_fcf,
@@ -418,15 +439,29 @@ def main():
                 marcap_map,
                 args.sleep,
                 skip_filled,
-                month_i=i,
+                month_i=month_i,
                 month_n=total,
                 t0=t0,
                 sum_acc=sum_acc,
                 sum_fcf=sum_fcf,
             )
         except DartQuotaExceeded as e:
+            if key_i + 1 < len(dart_keys):
+                key_i += 1
+                dart = _init_dart(dart_keys[key_i])
+                if dart is not None:
+                    _log_line(
+                        f"🔄 DART 일일 한도(020) → 예비 키 #{key_i + 1}로 전환, "
+                        f"{ym}부터 이어서 재시도. ({e})"
+                    )
+                    try:
+                        conn.commit()
+                    except Exception:
+                        pass
+                    continue
+                _log_line("❌ 백업 DART 키 초기화 실패 — 중단")
             msg = (
-                f"⛔ DART 일일 한도 초과(020) — 중단 at {ym} fin_year={fy}. "
+                f"⛔ DART 일일 한도 초과(020) — 사용 가능 키 소진 at {ym} fin_year={fy}. "
                 f"{e} | 재개: python backfill_accrual_fcf.py --all-months --resume --sleep 0.5"
             )
             _log_line(msg)
@@ -435,7 +470,7 @@ def main():
             except Exception:
                 pass
             _write_progress(
-                done=max(0, i - 1),
+                done=max(0, month_i - 1),
                 total=total,
                 ok_acc=sum_acc,
                 ok_fcf=sum_fcf,
@@ -454,7 +489,7 @@ def main():
             except Exception:
                 pass
             _write_progress(
-                done=max(0, i - 1),
+                done=max(0, month_i - 1),
                 total=total,
                 ok_acc=sum_acc,
                 ok_fcf=sum_fcf,
@@ -475,7 +510,7 @@ def main():
             except Exception:
                 pass
             _write_progress(
-                done=max(0, i - 1),
+                done=max(0, month_i - 1),
                 total=total,
                 ok_acc=sum_acc,
                 ok_fcf=sum_fcf,
@@ -490,9 +525,9 @@ def main():
 
         sum_acc += ok_acc
         sum_fcf += ok_fcf
-        next_m = months[i] if i < total else "DONE"
+        next_m = months[i + 1] if (i + 1) < total else "DONE"
         _write_progress(
-            done=i,
+            done=month_i,
             total=total,
             ok_acc=sum_acc,
             ok_fcf=sum_fcf,
@@ -501,6 +536,7 @@ def main():
             resume_month=next_m if next_m != "DONE" else ym,
             status="running" if next_m != "DONE" else "done",
         )
+        i += 1
 
     conn.close()
     print(

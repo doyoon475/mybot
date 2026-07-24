@@ -2,7 +2,8 @@
 headless = true
 address = "0.0.0.0"
 port = 8501
-enableCORS = false
+# XSRF 켠 상태와 호환 (false면 Streamlit이 CORS를 true로 덮어쓰며 경고)
+enableCORS = true
 enableXsrfProtection = true
 maxUploadSize = 200
 
