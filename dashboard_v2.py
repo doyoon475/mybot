@@ -754,22 +754,46 @@ _max_pos_on = st.sidebar.checkbox(
     "최대 보유 종목 수 제한",
     value=False,
     key="max_pos_on",
-    help="한도에 도달하면 신규 편입만 막고, 기존 보유 종목의 유지·비중 맞추기·매도는 그대로 둡니다.",
+    help=(
+        "한도에 도달하면 신규 편입만 막고, 유지·매도는 그대로. "
+        "등가중 목표 비중은 이 상한(또는 매수 목표 중 작은 쪽)으로 나눕니다. "
+        "하한은 버퍼 프리셋의 매수 목표(N)에 자동 연동됩니다."
+    ),
     on_change=reset_backtest_only,
 )
 _max_positions = 0
 if _max_pos_on:
+    # 하한=매수 목표 N (그 미만이면 슬롯스킵이 상시화). 상한=유지 버퍼 M과 여유.
+    _min_pos = max(1, int(_buy_n))
+    _max_pos_ceil = max(40, int(_hold_n), _min_pos)
+    if "max_positions_n" in st.session_state:
+        try:
+            _cur = int(st.session_state["max_positions_n"])
+        except (TypeError, ValueError):
+            _cur = _min_pos
+        if _cur < _min_pos:
+            st.session_state["max_positions_n"] = _min_pos
+        elif _cur > _max_pos_ceil:
+            st.session_state["max_positions_n"] = _max_pos_ceil
     _max_positions = int(
         st.sidebar.number_input(
             "최대 보유 종목 수",
-            min_value=5,
-            max_value=40,
-            value=min(40, max(5, int(_buy_n))),
+            min_value=_min_pos,
+            max_value=_max_pos_ceil,
+            value=min(_max_pos_ceil, max(_min_pos, int(_hold_n))),
             step=1,
             key="max_positions_n",
-            help="예: 15 = 최대 15종목. 빈자리가 생길 때만 신규 매수.",
+            help=(
+                f"하한 {_min_pos}=매수 목표(프리셋 연동). "
+                f"유지 버퍼까지 여유를 두려면 {_hold_n} 전후 권장. "
+                "예: 15 = 최대 15종목. 빈자리가 생길 때만 신규 매수."
+            ),
             on_change=reset_backtest_only,
         )
+    )
+    st.sidebar.caption(
+        f"하한 **{_min_pos}**(매수 1–{_buy_n}위) · "
+        f"유지 버퍼 상한 {_hold_n}위 · 입력 상한 {_max_pos_ceil}"
     )
 
 _freq_labels = list(REBALANCE_FREQ.keys())
@@ -805,18 +829,22 @@ if _inst_on:
         "회전율 상한",
         value=True,
         key="turn_cap_on",
-        help="1회 리밸런싱에서 매도+매수 명목합이 자산의 X%를 넘지 않게 비례 축소.",
+        help=(
+            "1회 리밸런싱에서 매도+매수 명목합이 자산의 X%를 넘지 않게 비례 축소. "
+            "100%여도 왕복 합 한도이며 무제한이 아닙니다. 제한을 끄려면 체크 해제."
+        ),
         on_change=reset_backtest_only,
     )
     if _turn_on:
         _turn_cap = (
             st.sidebar.slider(
-                "회전율 상한 (%)",
+                "회전율 상한 (%, 범위 5~100)",
                 min_value=5,
-                max_value=50,
+                max_value=100,
                 value=20,
                 step=5,
                 key="turn_cap_pct",
+                help="기본 20. 100=느슨한 상한(완전 교체와는 다름). 끔=체크 해제.",
                 on_change=reset_backtest_only,
             )
             / 100.0
@@ -842,19 +870,27 @@ if _inst_on:
         "ADV 참여 한도 (매수)",
         value=True,
         key="adv_cap_on",
-        help="종목당 매수액을 20일 평균 거래대금의 X% 이하로 제한 (시장충격 완화).",
+        help=(
+            "종목당 1회 매수액을 최근 20일 평균 거래대금(ADV)의 X% 이하로 제한합니다. "
+            "저유동 종목에 너무 큰 주문을 넣지 않게 해 시장충격을 완화합니다. "
+            "100%여도 ‘그날 거래대금 전체’ 한도이며 무제한이 아닙니다. 끄려면 체크 해제."
+        ),
         on_change=reset_backtest_only,
     )
     if _adv_on:
         _adv_pct = (
             st.sidebar.slider(
-                "ADV 최대 참여 (%)",
+                "ADV 최대 참여 (%, 범위 5~100)",
                 min_value=5,
-                max_value=50,
+                max_value=100,
                 value=20,
                 step=5,
                 key="adv_cap_pct_ui",
-                help="예: 20 = 일평균 거래대금의 0.2%가 아니라 20%. 개인 규모면 보통 여유.",
+                help=(
+                    "예: 20 = ADV의 20%(0.2%가 아님). "
+                    "개인·소규모는 20~50%로도 여유가 많고, "
+                    "100%는 느슨한 실험용. 기관식 1~2%는 아래 미세 한도 사용."
+                ),
                 on_change=reset_backtest_only,
             )
             / 100.0
@@ -864,7 +900,10 @@ if _inst_on:
             "ADV를 1-2% 미세 한도로 (기관식)",
             value=False,
             key="adv_fine_on",
-            help="체크 시 위 슬라이더 대신 1% 또는 2% 고정.",
+            help=(
+                "체크 시 위 슬라이더 대신 ADV의 1% 또는 2%만 매수 허용. "
+                "대규모·실전 충격 가정에 가깝고, 소형주 매수가 크게 줄어 곡선이 보수적으로 바뀝니다."
+            ),
             on_change=reset_backtest_only,
         )
         if _adv_fine:
@@ -1480,6 +1519,37 @@ if st.session_state.step1_unlocked:
 
         with st.expander("🔒 세부 재무·모멘텀 원천 지표 (유료 구독 예정)", expanded=False):
             st.info("상세 원천 지표(PER/PBR/ROE 등)는 향후 유료 구독 티어에서 제공합니다. 현재는 미리보기용으로만 노출됩니다.")
+            # 헤더 호버 툴팁 (사이드바 help와 동일 취지 · C9 성장률은 표시 전용)
+            _DETAIL_HELP = {
+                "순위": "종합점수 기준 순위",
+                "종목명": "종목 이름",
+                "per": "주가/순이익. 낮을수록 이익 대비 저평가 (랭킹 반영)",
+                "pbr": "주가/순자산. 낮을수록 자산 대비 저평가 (랭킹 반영)",
+                "psr": "주가/매출. 낮을수록 매출 대비 저평가 (랭킹 반영)",
+                "ev_ebitda": "기업가치/EBITDA. 낮을수록 저평가 (랭킹 반영)",
+                "per_sec": "섹터 대비 PER z-score. 낮을수록 업종 내 상대 저평가 (랭킹 반영)",
+                "pbr_sec": "섹터 대비 PBR z-score. 낮을수록 업종 내 상대 저평가 (랭킹 반영)",
+                "roe": "순이익/자기자본. 높을수록 자본 효율↑ (랭킹 반영)",
+                "op_margin": "영업이익/매출. 높을수록 본업 수익성↑ (랭킹 반영)",
+                "gross_margin": "매출총이익/매출. 높을수록 제품·원가 우위 (랭킹 반영)",
+                "f_score": "Piotroski식 0~9 정수. 높을수록 재무 개선·건전 (랭킹 반영)",
+                "vol_12m": "12개월 연율 변동성. 낮을수록 방어적 (랭킹 반영)",
+                "accrual": "(NI−CFO)/Assets. 낮을수록 이익 품질↑. 빈칸=미적재(랭킹 반영, 결측=불리)",
+                "fcf_yield": "(CFO−CapEx)/시총. 높을수록 현금 대비 저평가. 빈칸=미적재(랭킹 반영)",
+                "growth_stab": "다년 매출·영업·순이익 성장 안정 점수 (랭킹 반영)",
+                "div_yield": "연간배당/주가 (랭킹 반영)",
+                "share_growth": "주식수 증가율(희석). 낮을수록 유리 (랭킹 반영)",
+                "treasury_chg": "자사주 비중 YoY 증가 (랭킹 반영)",
+                "sales_g1y": "매출 YoY(%). 분기 패널 전년 동분기 없으면 빈칸. 표시 전용(랭킹 미사용)",
+                "op_g1y": "영업이익 YoY(%). 전년 동분기 없으면 빈칸. 표시 전용(랭킹 미사용)",
+                "ni_g1y": "순이익 YoY(%). 전년 동분기 없으면 빈칸. 표시 전용(랭킹 미사용)",
+                "earn_surprise": "실적 서프라이즈 근사(=ni_g1y). 표시 전용(랭킹 미사용)",
+                "mom_1m": "1개월 주가 수익률 (랭킹 반영)",
+                "mom_6m": "6개월 주가 수익률 (랭킹 반영)",
+                "mom_12m": "12개월 주가 수익률 (랭킹 반영)",
+                "earn_mom": "이익 모멘텀(실적 개선). 높을수록↑ (랭킹 반영)",
+                "factor_mom": "팩터 모멘텀(최근 잘 먹힌 스타일 노출) (랭킹 반영)",
+            }
             detail_cols = [
                 c for c in [
                     '순위', '종목명',
@@ -1494,11 +1564,19 @@ if st.session_state.step1_unlocked:
             num_cols = [c for c in detail_cols if c not in ("순위", "종목명")]
             # 화면의 0과 결측 구분: 결측은 빈칸
             detail_df[num_cols] = detail_df[num_cols].round(2)
-            st.dataframe(detail_df, width="stretch", hide_index=True)
+            _col_cfg = {}
+            for c in detail_cols:
+                _help = _DETAIL_HELP.get(c)
+                if c in ("순위", "종목명"):
+                    _col_cfg[c] = st.column_config.TextColumn(c, help=_help)
+                else:
+                    _col_cfg[c] = st.column_config.NumberColumn(c, help=_help, format="%.2f")
+            st.dataframe(detail_df, width="stretch", hide_index=True, column_config=_col_cfg)
             miss = int((df_result.head(20)["가치커버"] == 0).sum()) if "가치커버" in df_result.columns else 0
             st.caption(
                 f"⚠️ Top20 중 가치지표(PER/PBR/PSR/EV)가 전부 결측인 종목: **{miss}**개. "
-                "결측은 랭킹에서 최하위로 처리됩니다(0으로 채워 우대하지 않음)."
+                "랭킹에 쓰는 지표의 결측은 해당 팩터에서 최하위(na_option=bottom). "
+                "`sales_g1y`/`op_g1y`/`ni_g1y`는 표시 전용이라 빈칸이어도 순위 가점이 없습니다."
             )
     
     st.divider()
@@ -1823,8 +1901,10 @@ if st.session_state.step1_unlocked:
                             px = _px_at(current_prices, t)
                             if px > 0 and t in portfolio:
                                 sell_plan[t] = portfolio[t] * px
+                        # 종목캡 Trim: 매수(1~N)·유지 구간 모두 (완전 매도 대상은 위에서 처리)
+                        _keeping = {str(t) for t in bl} | {str(t) for t in hold_eff}
                         for t in list(portfolio.keys()):
-                            if t not in hold_eff:
+                            if str(t) not in _keeping:
                                 continue
                             px = _px_at(current_prices, t)
                             if px <= 0 or CAP_LIMIT <= 0:
@@ -1840,7 +1920,10 @@ if st.session_state.step1_unlocked:
                                 _bt_buy_skips_px += 1
                                 continue
                             cw = (portfolio.get(t, 0) * px) / total_asset if total_asset > 0 else 0
-                            need = max(0.0, (TARGET_W - cw) * total_asset)
+                            # 목표 비중은 등가중(TARGET_W). 종목캡은 상한일 뿐 매수 목표가 아님.
+                            _buy_cap = CAP_LIMIT if CAP_LIMIT > 0 else 1.0
+                            _tgt = min(TARGET_W, _buy_cap)
+                            need = max(0.0, (_tgt - cw) * total_asset)
                             if ADV_PCT > 0:
                                 adv_lim = max_buy_value_by_adv(t, avg_tv_map, ADV_PCT)
                                 if adv_lim is not None:
@@ -1926,6 +2009,9 @@ if st.session_state.step1_unlocked:
                 df_asset['HWM'] = df_asset['Total_Value'].cummax()
                 df_asset['Drawdown'] = (df_asset['Total_Value'] / df_asset['HWM'] - 1) * 100
                 mdd = df_asset['Drawdown'].min()
+                df_asset['LWM'] = df_asset['Total_Value'].cummin()
+                df_asset['Runup'] = (df_asset['Total_Value'] / df_asset['LWM'] - 1) * 100
+                max_runup = float(df_asset['Runup'].max()) if len(df_asset) else 0.0
 
                 # 진단: 적립금만 쌓인 직선(미매수) 감지
                 _corr = float(
@@ -1941,10 +2027,16 @@ if st.session_state.step1_unlocked:
                         "유동성·ADV 한도를 끄거나 완화한 뒤 다시 실행해 보세요."
                     )
                 elif _corr > 0.995 and _ret_std < 0.002:
+                    _hint = (
+                        " 최대 보유 < 매수 목표일 때 예전엔 종목당 비중이 낮아 현금이 쌓이며 "
+                        "직선처럼 보일 수 있었습니다(지금은 최대 보유 기준으로 비중 보정)."
+                        if MAX_POS > 0 and MAX_POS < BUY_N
+                        else " 제약이 과도하거나 주가 매칭이 약한 구간일 수 있습니다."
+                    )
                     st.warning(
                         f"자산 곡선이 누적 원금과 거의 같습니다 "
-                        f"(상관 {_corr:.3f}, 일간변동 {_ret_std:.4f}, 매수체결 {_bt_buy_fills}회). "
-                        "제약이 과도하거나 주가 매칭이 약한 구간일 수 있습니다."
+                        f"(상관 {_corr:.3f}, 일간변동 {_ret_std:.4f}, 매수체결 {_bt_buy_fills}회)."
+                        + _hint
                     )
                 else:
                     st.caption(
@@ -1955,32 +2047,80 @@ if st.session_state.step1_unlocked:
                             if MAX_POS > 0
                             else ""
                         )
+                        + (
+                            f" · 목표비중 {TARGET_W*100:.1f}%/종목"
+                            if TARGET_W > 0
+                            else ""
+                        )
                     )
                 
                 show_volatility = st.toggle(
                     "🚨 주요 하락장/고변동성 구간 차트에 음영 표시 (MDD -10% 기준)",
-                    help="낙폭 -10% 이하 구간만 붉은 음영으로 표시합니다. (라벨 중복 없이 가시성 우선)"
+                    help=(
+                        "고점 대비 낙폭이 -10% 이하인 날짜 구간에 세로 음영을 칩니다. "
+                        "다크 테마에서도 보이도록 불투명도를 높였습니다."
+                    ),
+                )
+                chart_mode = st.radio(
+                    "차트 스케일",
+                    [
+                        "절대 자산 (원 · 지수 보조축)",
+                        "상대 성장 (시작=100 · 지수 보조축)",
+                        "원금 대비 배수 (×100 · 동일축)",
+                    ],
+                    index=2,
+                    horizontal=True,
+                    key="bt_chart_scale",
+                    help=(
+                        "『상대 성장』은 적립금 때문에 포트만 크게 커져 지수가 작아 보일 수 있어, "
+                        "지수는 보조축으로 둡니다. 적립식 배수 비교는『원금 대비』를 권장합니다. "
+                        "원금 대비 = 평가액÷지금까지 넣은 원금×100 (적립을 수익으로 세지 않음)."
+                    ),
                 )
                 bc_kospi = st.checkbox("코스피 지수 오버레이 (시작=100)", value=True, key="bt_kospi")
                 bc_kosdaq = st.checkbox("코스닥 지수 오버레이 (시작=100)", value=True, key="bt_kosdaq")
-                
+
+                _mode_abs = chart_mode.startswith("절대")
+                _mode_rebased = chart_mode.startswith("상대")
+                _mode_mow = chart_mode.startswith("원금")
+
+                # 포트 시리즈 (모드별)
+                _v0 = float(df_asset["Total_Value"].iloc[0]) or 1.0
+                _i0 = float(df_asset["Total_Invested"].iloc[0]) or 1.0
+                if _mode_abs:
+                    y_port = df_asset["Total_Value"]
+                    y_inv = df_asset["Total_Invested"]
+                    name_port, name_inv = "나의 퀀트 랩 자산", "누적 투자 원금"
+                elif _mode_rebased:
+                    y_port = df_asset["Total_Value"] / _v0 * 100.0
+                    y_inv = df_asset["Total_Invested"] / _i0 * 100.0
+                    name_port, name_inv = "나의 퀀트 랩 (시작=100)", "누적 원금 (시작=100)"
+                else:
+                    # 원금 대비: 투입 대비 평가액 배수 ×100 (시작≈100, 5배→500)
+                    # 매달 적립은 분자(평가액)·분모(누적원금)에 동시에 반영 → 적립 자체는 배수를 안 부풀림
+                    _ti = df_asset["Total_Invested"].replace(0, np.nan)
+                    y_port = (df_asset["Total_Value"] / _ti * 100.0).fillna(100.0)
+                    y_inv = pd.Series(100.0, index=df_asset.index)
+                    name_port, name_inv = "원금 대비 (×100)", "원금 기준선 (=100)"
+
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(
                     x=df_asset.index,
-                    y=df_asset['Total_Invested'],
-                    mode='lines',
-                    name='누적 투자 원금',
-                    line=dict(color='rgba(150, 150, 150, 0.7)', width=2, dash='dash')
+                    y=y_inv,
+                    mode="lines",
+                    name=name_inv,
+                    line=dict(color="rgba(150, 150, 150, 0.7)", width=2, dash="dash"),
                 ))
                 fig.add_trace(go.Scatter(
                     x=df_asset.index,
-                    y=df_asset['Total_Value'],
-                    mode='lines',
-                    name='나의 퀀트 랩 자산',
-                    line=dict(color='#00CC96', width=2.5)
+                    y=y_port,
+                    mode="lines",
+                    name=name_port,
+                    line=dict(color="#00CC96", width=2.5),
                 ))
 
-                # #11: 코스피/코스닥 보조축 (시작일=100 으로 지수화)
+                # 절대·상대성장: 지수는 보조축(가독성). 원금대비만 동일축(배수 비교).
+                _bench_yaxis = "y" if _mode_mow else "y2"
                 if bc_kospi or bc_kosdaq:
                     try:
                         from liquidity_benchmark import load_kr_benchmarks
@@ -2009,73 +2149,132 @@ if st.session_state.step1_unlocked:
                                         y=rebased,
                                         mode="lines",
                                         name=f"{col} (시작=100)",
-                                        line=dict(color=colors.get(col, "#AB63FA"), width=1.5, dash="dot"),
-                                        yaxis="y2",
+                                        line=dict(
+                                            color=colors.get(col, "#AB63FA"),
+                                            width=1.5,
+                                            dash="dot",
+                                        ),
+                                        yaxis=_bench_yaxis,
                                     )
                                 )
                     except Exception as e:
                         st.caption(f"⚠️ 벤치마크 지수 로드 실패: {e}")
-                
+
                 if show_volatility:
-                    is_dd = df_asset['Drawdown'] <= -10.0
-                    # 연속 구간만 음영 (annotation_text 제거 → 라벨 겹침 해소)
+                    is_dd = df_asset["Drawdown"] <= -10.0
                     dd_starts = df_asset.index[is_dd & ~is_dd.shift(1).fillna(False)]
                     dd_ends = df_asset.index[is_dd & ~is_dd.shift(-1).fillna(False)]
-                    for idx, (s, e) in enumerate(zip(dd_starts, dd_ends)):
+                    _n_band = 0
+                    _n_days = 0
+                    for s, e in zip(dd_starts, dd_ends):
+                        _n_band += 1
+                        _n_days += max(1, int((e - s).days) + 1)
+                        # 다크 배경에서 보이도록 불투명도↑ + 테두리
                         fig.add_vrect(
-                            x0=s, x1=e,
-                            fillcolor="rgba(255, 59, 48, 0.28)",
+                            x0=s,
+                            x1=e,
+                            fillcolor="rgba(255, 69, 58, 0.38)",
+                            opacity=1.0,
                             layer="below",
-                            line_width=0,
+                            line_width=1,
+                            line_color="rgba(255, 69, 58, 0.85)",
                         )
-                    # 최장 하락 구간에만 단일 라벨
-                    if len(dd_starts):
-                        lengths = [(e - s).days for s, e in zip(dd_starts, dd_ends)]
-                        j = int(np.argmax(lengths))
+                    if _n_band:
                         fig.add_annotation(
-                            x=dd_starts[j] + (dd_ends[j] - dd_starts[j]) / 2,
-                            y=df_asset['Total_Value'].max(),
-                            text="고변동성(MDD≤-10%)",
+                            xref="paper",
+                            yref="paper",
+                            x=0.01,
+                            y=0.98,
+                            text=f"고변동성 음영 {_n_band}구간 · {_n_days}일 (낙폭≤-10%)",
                             showarrow=False,
-                            font=dict(size=11, color="#FF3B30"),
-                            bgcolor="rgba(255,255,255,0.65)",
+                            xanchor="left",
+                            yanchor="top",
+                            font=dict(size=12, color="#FF8A80"),
+                            bgcolor="rgba(40, 12, 12, 0.75)",
+                            bordercolor="rgba(255, 69, 58, 0.9)",
+                            borderwidth=1,
+                            borderpad=4,
                         )
-                
-                fig.update_layout(
+
+                _need_y2 = (not _mode_mow) and (bc_kospi or bc_kosdaq)
+                _layout = dict(
                     height=420,
-                    margin=dict(l=60, r=55, t=30, b=20),
+                    margin=dict(l=60, r=55 if _need_y2 else 40, t=30, b=20),
                     hovermode="x unified",
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
-                    yaxis=dict(
+                )
+                if _mode_abs:
+                    _layout["yaxis"] = dict(
                         title="자산 (원)",
                         tickformat=",.0f",
                         separatethousands=True,
                         exponentformat="none",
                         showexponent="none",
-                    ),
-                    yaxis2=dict(
+                    )
+                elif _mode_rebased:
+                    _layout["yaxis"] = dict(
+                        title="포트·원금 (시작=100, 적립 포함)",
+                        rangemode="tozero",
+                    )
+                else:
+                    _layout["yaxis"] = dict(
+                        title="원금 대비 (100=원금, 500=5배)",
+                        rangemode="tozero",
+                    )
+                if _need_y2:
+                    _layout["yaxis2"] = dict(
                         title="지수 (시작=100)",
                         overlaying="y",
                         side="right",
                         showgrid=False,
-                    ),
-                )
-                # hover: 자산은 원, 지수는 그대로
+                    )
+                fig.update_layout(**_layout)
+
                 for tr in fig.data:
-                    if tr.name and "시작=100" in str(tr.name):
+                    nm = str(tr.name or "")
+                    if (_mode_abs or _mode_rebased) and ("시작=100" in nm) and (
+                        "퀀트" not in nm and "원금" not in nm
+                    ):
                         tr.hovertemplate = "%{y:.1f}<extra>%{fullData.name}</extra>"
-                    else:
+                    elif _mode_abs and ("자산" in nm or "원금" in nm):
                         tr.hovertemplate = "%{y:,.0f} 원<extra>%{fullData.name}</extra>"
+                    elif _mode_mow and "원금 대비" in nm:
+                        tr.hovertemplate = (
+                            "%{y:.1f} (= %{y:.2f}÷100 배)"
+                            "<extra>%{fullData.name}</extra>"
+                        )
+                    else:
+                        tr.hovertemplate = "%{y:.1f}<extra>%{fullData.name}</extra>"
                 st.plotly_chart(fig, width="stretch")
-                st.caption(
-                    "✔️ 곡선은 **매일 종가 평가**, 종목 교체는 **매월 첫 거래일**. "
-                    "코스피/코스닥은 **보조축·시작일=100** 지수화(절대 레벨 비교용 아님)."
-                )
+
+                if _mode_abs:
+                    st.caption(
+                        "✔️ 절대 자산(원)과 지수(시작=100)는 **눈금이 다릅니다.** "
+                        "높낮이만으로 수익률을 비교하지 마세요. "
+                        "직관 비교는 위의『원금 대비』를 쓰세요."
+                    )
+                elif _mode_rebased:
+                    st.caption(
+                        "✔️ **상대 성장**: 포트·누적원금은 시작=100(왼쪽). "
+                        "매달 적립이 들어가면 포트 곡선이 커져 지수가 작아 보이므로 "
+                        "**코스피/코스닥은 오른쪽 보조축**입니다. "
+                        "운용 배수 비교는『원금 대비』를 쓰세요."
+                    )
+                else:
+                    _mult = float(final_val / total_invested) if total_invested > 0 else 0.0
+                    st.caption(
+                        f"✔️ **원금 대비** = 평가액 ÷ 누적원금(초기+매달 적립) × 100 "
+                        f"(끝점 ≈ {_mult*100:.0f} → {_mult:.2f}배). "
+                        "적립금은 분자·분모에 **같이** 들어가 수익으로 부풀리지 않습니다. "
+                        "회색선(=100)은 ‘원금과 동일’ 기준선이고, "
+                        "지수 시작=100과 같은 눈금에서 배수·시장 성장을 비교합니다."
+                    )
                 
-                rc1, rc2, rc3 = st.columns(3)
+                rc1, rc2, rc3, rc4 = st.columns(4)
                 rc1.metric("최종 자산 (만원)", f"{final_val/10000:,.0f}")
                 rc2.metric("CAGR (%)", f"{cagr:.2f}%")
                 rc3.metric("MDD (%)", f"{mdd:.2f}%")
+                rc4.metric("최대상승폭 (%)", f"{max_runup:.2f}%")
 
                 with st.expander("🔍 포트폴리오 편입 종목 상세 수익률 분석", expanded=False):
                     ticker_to_name = dict(zip(df_all['ticker'], df_all['종목명']))
@@ -2112,13 +2311,73 @@ if st.session_state.step1_unlocked:
                     else:
                         st.info("편입된 종목이 없습니다.")
 
-                with st.expander("📉 구간별 낙폭(Drawdown) 심층 분석", expanded=False):
-                    fig_dd = go.Figure()
-                    fig_dd.add_trace(go.Scatter(
-                        x=df_asset.index, y=df_asset['Drawdown'],
-                        fill='tozeroy', mode='lines', name='Drawdown',
-                        line=dict(color='#FF4B4B', width=2)
-                    ))
-                    fig_dd.update_layout(height=250, margin=dict(l=20, r=20, t=30, b=20), hovermode="x unified", yaxis_title="낙폭 (%)")
+                with st.expander("📉 구간별 낙폭·상승폭 심층 분석", expanded=False):
+                    from plotly.subplots import make_subplots
+
+                    # 동일축이면 상승폭(+수천%)에 낙폭(-30%)이 깔림 → 패널 분리
+                    fig_dd = make_subplots(
+                        rows=2,
+                        cols=1,
+                        shared_xaxes=True,
+                        vertical_spacing=0.08,
+                        row_heights=[0.45, 0.55],
+                        subplot_titles=("상승폭 (저점 대비, %)", "낙폭 (고점 대비, %)"),
+                    )
+                    fig_dd.add_trace(
+                        go.Scatter(
+                            x=df_asset.index,
+                            y=df_asset["Runup"],
+                            fill="tozeroy",
+                            mode="lines",
+                            name="상승폭 (저점 대비)",
+                            line=dict(color="#00CC96", width=2),
+                            hovertemplate="%{y:.2f}%<extra>상승폭</extra>",
+                        ),
+                        row=1,
+                        col=1,
+                    )
+                    fig_dd.add_trace(
+                        go.Scatter(
+                            x=df_asset.index,
+                            y=df_asset["Drawdown"],
+                            fill="tozeroy",
+                            mode="lines",
+                            name="낙폭 (고점 대비)",
+                            line=dict(color="#FF4B4B", width=2),
+                            hovertemplate="%{y:.2f}%<extra>낙폭</extra>",
+                        ),
+                        row=2,
+                        col=1,
+                    )
+                    _dd_floor = float(min(mdd * 1.15, -5.0)) if mdd < 0 else -5.0
+                    fig_dd.update_yaxes(
+                        title_text="%",
+                        rangemode="tozero",
+                        row=1,
+                        col=1,
+                    )
+                    fig_dd.update_yaxes(
+                        title_text="%",
+                        range=[_dd_floor, 2.0],
+                        zeroline=True,
+                        zerolinewidth=1,
+                        zerolinecolor="rgba(180,180,180,0.7)",
+                        row=2,
+                        col=1,
+                    )
+                    fig_dd.update_layout(
+                        height=420,
+                        margin=dict(l=50, r=20, t=40, b=20),
+                        hovermode="x unified",
+                        legend=dict(orientation="h", yanchor="bottom", y=1.08, x=0),
+                        showlegend=True,
+                    )
                     st.plotly_chart(fig_dd, width="stretch")
-                    st.caption("✔️ 차트의 깊은 붉은 영역이 시스템이 수학적으로 찾아낸 계좌의 최대 스트레스(Drawdown) 구간입니다.")
+                    _dd1, _dd2 = st.columns(2)
+                    _dd1.metric("최대 낙폭 MDD", f"{mdd:.2f}%")
+                    _dd2.metric("최대 상승폭 (저점 대비)", f"{max_runup:.2f}%")
+                    st.caption(
+                        "✔️ **위** 상승폭 = 평가액÷누적저점(LWM)−1 (≥0). "
+                        "**아래** 낙폭 = 평가액÷누적고점(HWM)−1 (≤0, 음수 축). "
+                        "스케일을 나눠 폭락 구간이 가려지지 않게 했습니다."
+                    )

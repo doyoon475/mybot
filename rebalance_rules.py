@@ -68,7 +68,7 @@ class TradeRules:
     # --- 기관식 확장 (선택) ---
     turnover_cap: float = 0.0  # 0=off, 예: 0.20 = 1회 리밸런싱 명목 교체 ≤ 자산의 20%
     min_hold_cycles: int = 0  # 0=off, 매수 후 N회 리밸런싱 주기 동안 강제 유지
-    adv_max_pct: float = 0.0  # 0=off, 매수 ≤ 20일 평균 거래대금의 x%
+    adv_max_pct: float = 0.0  # 0=off, 매수 ≤ 20일 평균 거래대금의 x% (최대 100%)
     sector_cap: float = 0.0  # 0=off, 단일 섹터 비중 상한
     mdd_halt_pct: float = 0.0  # 0=off, 고점 대비 낙폭(%) 이상이면 신규 매수 중단
     max_positions: int = 0  # 0=off, 보유 종목 수 상한(신규 편입만 차단)
@@ -89,7 +89,7 @@ class TradeRules:
             self, "min_hold_cycles", max(0, int(self.min_hold_cycles or 0))
         )
         object.__setattr__(
-            self, "adv_max_pct", max(0.0, min(0.2, float(self.adv_max_pct or 0.0)))
+            self, "adv_max_pct", max(0.0, min(1.0, float(self.adv_max_pct or 0.0)))
         )
         object.__setattr__(
             self, "sector_cap", max(0.0, min(1.0, float(self.sector_cap or 0.0)))
@@ -103,8 +103,12 @@ class TradeRules:
 
     @property
     def target_weight(self) -> float:
+        """등가중 목표 비중. 최대 보유 종목 수가 켜져 있으면 그 상한으로 나눔(현금 방치 방지)."""
         if self.target_equal_weight and self.buy_n > 0:
-            return 1.0 / self.buy_n
+            n = self.buy_n
+            if self.max_positions > 0:
+                n = min(n, self.max_positions)
+            return 1.0 / n
         return 0.10
 
     def summary(self) -> str:

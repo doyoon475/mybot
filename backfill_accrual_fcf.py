@@ -5,9 +5,8 @@ Phase A3–A4 백필: DART 전체재무제표(finstate_all)로 accrual / fcf_yie
 
 예:
   python backfill_accrual_fcf.py --month 2026-07 --limit 40
-  python backfill_accrual_fcf.py --month 2026-07
-  python backfill_accrual_fcf.py --all-months
-  python backfill_accrual_fcf.py --all-months --sleep 0.5
+  python backfill_accrual_fcf.py --all-months --from-month 2020-04 --sleep 0.5
+  python backfill_accrual_fcf.py --all-months --resume --sleep 0.5
 """
 from __future__ import annotations
 
@@ -16,6 +15,7 @@ import contextlib
 import io
 import os
 import time
+import traceback
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -48,6 +48,66 @@ def _fin_year(ym: str, override: Optional[int] = None) -> int:
     return y - 2 if m <= 3 else y - 1
 
 
+def _read_progress() -> Dict[str, str]:
+    if not os.path.exists(PROGRESS_PATH):
+        return {}
+    out: Dict[str, str] = {}
+    try:
+        with open(PROGRESS_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip()
+    except Exception:
+        return {}
+    return out
+
+
+def _parse_resume_month(prog: Dict[str, str]) -> Optional[str]:
+    """progress.txt 에서 재개 시작월(YYYY-MM) 추출."""
+    for key in ("resume_month", "month"):
+        v = prog.get(key, "")
+        if len(v) >= 7 and v[4] == "-":
+            return v[:7]
+    cur = prog.get("current", "")
+    for prefix in ("QUOTA_HALT@", "ERROR_HALT@", "CRASH@"):
+        if cur.startswith(prefix):
+            ym = cur[len(prefix) : len(prefix) + 7]
+            if len(ym) == 7 and ym[4] == "-":
+                return ym
+    if len(cur) >= 7 and cur[4] == "-" and cur[:4].isdigit():
+        return cur[:7]
+    return None
+
+
+def _first_incomplete_month(
+    conn,
+    months: List[str],
+    *,
+    min_both_pct: float = 0.35,
+) -> Optional[str]:
+    """DB 기준으로 accrual+fcf 둘 다 있는 비율이 낮은 첫 월."""
+    cur = conn.cursor()
+    for ym in months:
+        n = cur.execute(
+            "SELECT count(*) FROM monthly_factor WHERE date=?", (ym,)
+        ).fetchone()[0]
+        if n <= 0:
+            return ym
+        both = cur.execute(
+            """
+            SELECT count(*) FROM monthly_factor
+            WHERE date=? AND accrual IS NOT NULL AND fcf_yield IS NOT NULL
+            """,
+            (ym,),
+        ).fetchone()[0]
+        if (both / n) < min_both_pct:
+            return ym
+    return None
+
+
 def _write_progress(
     *,
     done: int,
@@ -57,13 +117,20 @@ def _write_progress(
     current: str,
     t0: float,
     phase: str = "accrual_fcf",
+    resume_month: Optional[str] = None,
+    status: str = "running",
+    last_error: str = "",
 ) -> None:
     elapsed = time.time() - t0
     rate = done / elapsed if elapsed > 0 and done else 0
     eta = (total - done) / rate if rate > 0 else 0
     pct = 100.0 * done / total if total else 0
+    rm = resume_month or ""
+    if not rm:
+        rm = _parse_resume_month({"current": current}) or ""
     body = (
         f"phase={phase}\n"
+        f"status={status}\n"
         f"progress={done}/{total}\n"
         f"percent={pct:.2f}\n"
         f"ok_accrual={ok_acc}\n"
@@ -71,6 +138,8 @@ def _write_progress(
         f"elapsed_sec={elapsed:.0f}\n"
         f"eta_sec={eta:.0f}\n"
         f"current={current}\n"
+        f"resume_month={rm}\n"
+        f"last_error={last_error[:200]}\n"
         f"updated={time.strftime('%Y-%m-%d %H:%M:%S')}\n"
     )
     os.makedirs(os.path.dirname(PROGRESS_PATH), exist_ok=True)
@@ -113,6 +182,8 @@ def _backfill_month(
     month_i: int = 1,
     month_n: int = 1,
     t0: Optional[float] = None,
+    sum_acc: int = 0,
+    sum_fcf: int = 0,
 ) -> Tuple[int, int, int]:
     """한 달 백필. 반환: (처리시도, ok_acc, ok_fcf)"""
     cur = conn.cursor()
@@ -134,12 +205,18 @@ def _backfill_month(
     else:
         filled = set()
 
+    skipped = len(filled)
+    if skipped:
+        _log_line(
+            f"A3 [{month_i}/{month_n}] {month} skip_filled={skipped}/{n_master} "
+            f"(이어서 미완료 종목만)"
+        )
+
     for row in master.itertuples(index=False):
         ticker, sector = row.ticker, row.sector
         if ticker in filled:
             continue
         tried += 1
-        # DART 013 등 라이브러리 print 억제
         try:
             df_all = _quiet_fetch(
                 fetch_finstate_all_cached, dart, ticker, fin_year, sleep_sec=sleep_sec
@@ -156,7 +233,6 @@ def _backfill_month(
                     f"{ticker} | acc={ok_acc} fcf={ok_fcf} empty={empty} "
                     f"elapsed={elapsed/60:.1f}m"
                 )
-            # 캐시 미스 + 연속 empty가 많으면 한도/장애 가능성 → 조기 경고만 (020은 예외로 중단)
             continue
         fund = extract_fundamentals(df_all)
         try:
@@ -194,19 +270,16 @@ def _backfill_month(
                 f"elapsed={elapsed/60:.1f}m"
             )
             conn.commit()
-            with open(PROGRESS_PATH, "w", encoding="utf-8") as f:
-                f.write(
-                    f"phase=accrual_fcf\n"
-                    f"progress={month_i-1}/{month_n}\n"
-                    f"month={month}\n"
-                    f"ticker={tried}/{n_master}\n"
-                    f"ok_accrual={ok_acc}\n"
-                    f"ok_fcf={ok_fcf}\n"
-                    f"empty={empty}\n"
-                    f"current={ticker}\n"
-                    f"elapsed_sec={elapsed:.0f}\n"
-                    f"updated={time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                )
+            _write_progress(
+                done=max(0, month_i - 1),
+                total=month_n,
+                ok_acc=sum_acc + ok_acc,
+                ok_fcf=sum_fcf + ok_fcf,
+                current=f"{month}#{ticker}",
+                t0=t0 or t_month,
+                resume_month=month,
+                status="running",
+            )
 
     conn.commit()
     return tried, ok_acc, ok_fcf
@@ -233,6 +306,17 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--month", type=str, default=None, help="YYYY-MM (기본: DB 최신월)")
     p.add_argument("--all-months", action="store_true", help="monthly_factor 전 월 백필")
+    p.add_argument(
+        "--from-month",
+        type=str,
+        default=None,
+        help="YYYY-MM 이상만 (예: 2020-04부터)",
+    )
+    p.add_argument(
+        "--resume",
+        action="store_true",
+        help="progress.txt/DB 기준으로 중단 지점부터 재개 (한도·일반오류 공통)",
+    )
     p.add_argument("--limit", type=int, default=None, help="월별 종목 수 제한(테스트)")
     p.add_argument("--sleep", type=float, default=0.5)
     p.add_argument("--year", type=int, default=None, help="재무연도 고정(단일 월용)")
@@ -262,6 +346,26 @@ def main():
             return
         months = [month]
 
+    from_month = args.from_month.strip() if args.from_month else None
+
+    if args.resume and not from_month:
+        prog = _read_progress()
+        from_month = _parse_resume_month(prog)
+        if from_month:
+            print(
+                f"⏯ resume progress → {from_month} "
+                f"(status={prog.get('status', '?')} current={prog.get('current', '')})",
+                flush=True,
+            )
+        else:
+            from_month = _first_incomplete_month(conn, months)
+            if from_month:
+                print(f"⏯ resume DB 미완료 첫 월 → {from_month}", flush=True)
+
+    if from_month:
+        months = [m for m in months if m >= from_month]
+        print(f"⏩ from-month={from_month} → {len(months)}개월", flush=True)
+
     if not months:
         print("❌ 대상 월 없음")
         return
@@ -280,10 +384,10 @@ def main():
     total = len(months)
     print(
         f"🚀 accrual/fcf 백필 | months={total} | sleep={args.sleep} | "
-        f"skip_filled={skip_filled}",
+        f"skip_filled={skip_filled} | resume={bool(args.resume)}",
         flush=True,
     )
-    if os.path.exists(LIVE_LOG):
+    if (not args.resume) and os.path.exists(LIVE_LOG):
         os.remove(LIVE_LOG)
 
     t0 = time.time()
@@ -294,6 +398,16 @@ def main():
         if args.limit and i == 1:
             print(f"🔬 limit={args.limit}", flush=True)
         _log_line(f"—— [{i}/{total}] {ym} fin_year={fy} tickers={len(master)} ——")
+        _write_progress(
+            done=max(0, i - 1),
+            total=total,
+            ok_acc=sum_acc,
+            ok_fcf=sum_fcf,
+            current=ym,
+            t0=t0,
+            resume_month=ym,
+            status="running",
+        )
         try:
             tried, ok_acc, ok_fcf = _backfill_month(
                 conn,
@@ -307,14 +421,19 @@ def main():
                 month_i=i,
                 month_n=total,
                 t0=t0,
+                sum_acc=sum_acc,
+                sum_fcf=sum_fcf,
             )
         except DartQuotaExceeded as e:
             msg = (
-                f"⛔ DART 일일 한도 초과(020) — 백필 중단 at {ym} fin_year={fy}. "
-                f"{e} | 내일 한도 리셋 후 같은 명령으로 재개 "
-                f"(skip_filled=True라 이미 채운 월은 건너뜀)."
+                f"⛔ DART 일일 한도 초과(020) — 중단 at {ym} fin_year={fy}. "
+                f"{e} | 재개: python backfill_accrual_fcf.py --all-months --resume --sleep 0.5"
             )
             _log_line(msg)
+            try:
+                conn.commit()
+            except Exception:
+                pass
             _write_progress(
                 done=max(0, i - 1),
                 total=total,
@@ -322,11 +441,56 @@ def main():
                 ok_fcf=sum_fcf,
                 current=f"QUOTA_HALT@{ym}",
                 t0=t0,
+                resume_month=ym,
+                status="quota_halt",
+                last_error=str(e),
             )
             conn.close()
             raise SystemExit(2) from e
+        except KeyboardInterrupt as e:
+            _log_line(f"⛔ 사용자 중단 at {ym} — --resume 로 이어서 가능")
+            try:
+                conn.commit()
+            except Exception:
+                pass
+            _write_progress(
+                done=max(0, i - 1),
+                total=total,
+                ok_acc=sum_acc,
+                ok_fcf=sum_fcf,
+                current=f"ERROR_HALT@{ym}",
+                t0=t0,
+                resume_month=ym,
+                status="error_halt",
+                last_error="KeyboardInterrupt",
+            )
+            conn.close()
+            raise SystemExit(130) from e
+        except Exception as e:
+            err = f"{type(e).__name__}: {e}"
+            _log_line(f"⛔ 오류 중단 at {ym}: {err}")
+            _log_line(traceback.format_exc()[-800:])
+            try:
+                conn.commit()
+            except Exception:
+                pass
+            _write_progress(
+                done=max(0, i - 1),
+                total=total,
+                ok_acc=sum_acc,
+                ok_fcf=sum_fcf,
+                current=f"ERROR_HALT@{ym}",
+                t0=t0,
+                resume_month=ym,
+                status="error_halt",
+                last_error=err,
+            )
+            conn.close()
+            raise SystemExit(1) from e
+
         sum_acc += ok_acc
         sum_fcf += ok_fcf
+        next_m = months[i] if i < total else "DONE"
         _write_progress(
             done=i,
             total=total,
@@ -334,6 +498,8 @@ def main():
             ok_fcf=sum_fcf,
             current=f"{ym}(+{ok_acc}/{ok_fcf},tried={tried})",
             t0=t0,
+            resume_month=next_m if next_m != "DONE" else ym,
+            status="running" if next_m != "DONE" else "done",
         )
 
     conn.close()
@@ -349,6 +515,8 @@ def main():
         ok_fcf=sum_fcf,
         current="DONE",
         t0=t0,
+        resume_month="",
+        status="done",
     )
 
 

@@ -76,6 +76,54 @@ docker compose up --build -d
 - **동시 쓰기 금지:** C9·ETL·pull 중에는 다른 writer/대시보드 적재를 끄기.
 - **장기:** 적재 DB ≠ 서빙 DB 분리 (로드맵에 기록됨).
 
+## 로컬 Docker 게이트 — BIOS 가상화 (삼성 노트북)
+
+`#3 상점` 전 로컬에서 `docker compose` 검증하려면 **CPU 가상화(VT-x)** 가 BIOS에서 켜져 있어야 합니다.
+
+### 현재 PC 진단 (2026-07-23)
+| 항목 | 값 |
+|------|-----|
+| 기기 | SAMSUNG 960QHA · Intel Core Ultra 7 256V |
+| BIOS 가상화 | **OK** (`HyperVisorPresent=True`) |
+| WSL | **OK** (Ubuntu, VERSION 2) |
+| Docker Desktop | **OK** — Engine Server 응답 (`docker version` Server 섹션 표시) |
+| `docker compose up --build -d` | **OK (2026-07-23)** — `mybot-quant-lab-1` healthy · http://localhost:8501 |
+
+로컬 검증:
+
+```powershell
+docker version
+docker compose -f C:\mybot\docker-compose.yml ps
+# (선택) docker compose -f C:\mybot\docker-compose.yml up --build -d
+```
+
+### BIOS에서 켜기 (사용자 작업 — 재부팅 필요)
+1. 저장 작업 모두 저장 후 **재시작**.
+2. 삼성 로고가 뜨면 **F2** (안 되면 **Fn+F2**) 연타.  
+   또는 Windows: **설정 → 시스템 → 복구 → 고급 시작 → 지금 다시 시작 → 문제 해결 → 고급 옵션 → UEFI 펌웨어 설정**.
+3. BIOS에서 아래 중 해당 항목을 **Enabled**:
+   - `Intel Virtualization Technology` / `Intel VT-x`
+   - (있으면) `Intel VT-d` / `Virtualization`
+   - Advanced → CPU Configuration 쪽에 있는 경우가 많음
+4. **Save & Exit** (보통 F10 → Yes).
+5. Windows 부팅 후 확인:
+   ```powershell
+   Get-ComputerInfo | Select-Object HyperVisorPresent
+   # True 이면 BIOS 가상화 OK
+   ```
+
+### WSL2 (Docker Engine용) — 완료됨
+이미 Ubuntu(WSL2) + `docker-desktop` distro가 있으면 추가 설치 불필요.
+
+신규 PC라면 관리자 PowerShell에서:
+
+```powershell
+wsl --install -d Ubuntu
+# 필요 시 재부팅 후
+& "$env:LocalAppData\Programs\DockerDesktop\Docker Desktop.exe"
+docker version
+```
+
 ## 빠른 검증
 
 ```bash

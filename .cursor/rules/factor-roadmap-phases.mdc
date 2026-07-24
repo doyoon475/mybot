@@ -30,16 +30,18 @@ alwaysApply: true
 - **다음 (블로킹):** accrual/FCF 전 기간 백필 완료 → 로컬 커버리지 확인 → GitHub Actions 수동/재실행으로 Release 게이트 통과 확인 → (제품) BIOS/Docker → #3 상점.
 
 ### A3 accrual/FCF 백필 — 재개 체크리스트 (필수)
-- **상태 (2026-07-23):** `QUOTA_HALT@2020-04`. ~2020-03까지 정상(fin_year=2018 캐시). 2020-04~ 는 fin_year=2019+ 실시간 호출이 필요한데 **OpenDART status 020(일일 한도)** 로 전량 empty → 프로세스 중지함.
-- **캐시:** `data_cache/dart_cache/*_2018_all.parquet`·`*_2025_all.parquet` 위주. 2019~2024는 거의 없음 → **며칠에 나눠** 재개.
-- **재개 명령 (한도 리셋 후, 프로세스 1개만):**
+- **상태:** `QUOTA_HALT@2022-05` (progress≈25/76, accrual≈48k). 한도 리셋 후 `--resume`.
+- **캐시:** `data_cache/dart_cache/*_2018_all.parquet`·`*_2025_all.parquet` 위주. 2019~2024는 채우는 중 → **며칠에 나눠** 가능.
+- **재개 명령 (한도·일반오류·Ctrl+C 후, 프로세스 1개만):**
   ```powershell
   cd C:\mybot
-  .\.venv\Scripts\python.exe -u backfill_accrual_fcf.py --all-months --sleep 0.5
+  .\.venv\Scripts\python.exe -u backfill_accrual_fcf.py --all-months --resume --sleep 0.5
   ```
-- `skip_filled=True`(기본)라 이미 accrual+fcf 있는 종목/월은 건너뜀. 최종 대상 월 = DB `monthly_factor` 최신(`2026-07`까지).
+  - `--resume`: `accrual_fcf_progress.txt`의 `resume_month` (없으면 DB 첫 미완료월)부터.
+  - 월 안에서는 `skip_filled`로 이미 accrual+fcf 있는 종목 건너뜀.
+  - 한도(020)·Exception·KeyboardInterrupt 모두 `QUOTA_HALT@`/`ERROR_HALT@` + `resume_month` 기록 후 종료.
+  - 수동: `--from-month 2022-05`
 - **금지:** 백필 중 `pull_db_release` / 이중 실행 / 다른 DART 대량 writer 동시 실행.
-- 020 재발생 시 코드가 `DartQuotaExceeded`로 즉시 중단 → 다음날 같은 명령으로 이어가기.
 - 진행 확인: `data_cache/accrual_fcf_progress.txt`, `accrual_fcf_live.log`.
 
 ## 데이터 무결성 (단기 → 장기)

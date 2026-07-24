@@ -30,21 +30,19 @@ alwaysApply: true
 | P0 | #11 벤치마크 곡선, #1 유동성 필터 | 완료 → **#1 고도화**: 절대컷(기본 10억) + 거래대금 하위% + 시총 하위%(FDR/monthly_shares) |
 | P1 | #2 인포 툴팁 → #6 월간 보고서 → #5 국면·상대강도 | #2·#5-a·#5-b·#6 완료 |
 | P2 | #4 회원 → #8 배포 고도화 | #4 완료(헤더 로그인) · #8 Docker/DEPLOY MVP 완료 |
-| — | **데이터 마감 (진행 중)** | C9·7월 ETL 완료. **A3 accrual/FCF: `QUOTA_HALT@2020-04`** — DART 020. 한도 리셋 후 `--all-months` 재개(프로세스 1개만, 며칠 분할). 상세는 `factor-roadmap-phases.mdc` A3 체크리스트. |
+| — | **데이터 마감 (진행 중)** | C9·7월 ETL 완료. **A3 accrual/FCF: `QUOTA_HALT@2022-05`** (25/76≈33%, accrual≈48k). 한도 리셋 후 `--resume` 재개(프로세스 1개만). 상세 `factor-roadmap-phases.mdc`. |
 | — | **베타: 인증 게이트 복구 (필수 후속)** | 현재 `BETA_SKIP_AUTH_GATES=1`(기본)로 **로그인 없이** 포트 확정·보고서 다운로드 가능. **상점(#3)·정식 공개 전에** `.env`에 `BETA_SKIP_AUTH_GATES=0` 또는 코드 기본값을 False로 되돌려 회원 게이트 재적용. |
 | — | **게이트: Actions 정상화 확인** | accrual/FCF가 **정상 수집된 뒤** → (필요 시) 로컬 DB `publish_db_release` → GitHub Actions **수동 실행(`workflow_dispatch`) / 실패 job 재실행(타임머신)** 으로 일일 파이프라인·품질 게이트·Release 업로드가 통과하는지 확인 (**#3 상점 전 필수**) |
-| — | **게이트: BIOS 가상화** | 위 Actions 확인 **끝난 뒤**, #3 상점 **들어가기 전에** 삼성 노트북 BIOS에서 VT-x 활성화 → Docker Desktop Engine running 확인 (**필수**) |
+| — | **게이트: BIOS 가상화** | **완료 (2026-07-23):** BIOS VT-x OK · WSL2(Ubuntu) · Docker Engine 기동 확인. 상세 [`DEPLOY.md`](DEPLOY.md). |
 | P3 | #3 상점 → #12 게시판 | 대기 (Actions 정상화 + BIOS/Docker 확인 후 · **인증 게이트 복구 후**) |
 | P4 | #7 미국, #9 알파 탐색 보조 | 대기 |
 
-## 지금(A3 대기 중) 할 수 있는 일
-A3는 DART 한도 때문에 **내일 이후 재개**. 그동안 DB writer/`pull_db_release`는 건드리지 말고 아래만.
+## 지금(A3 진행 중) 할 수 있는 일
+A3는 DART 일일 한도 때문에 **한도 리셋 후 `--resume`만** (프로세스 1개). DB writer/`pull_db_release`/`publish`는 A3 끝나기 전 금지.
 
-1. **코드 정리·커밋** (요청 시): 피벗 중복 수정, `calculate_rank` float 버그, `max_positions` 신규매수 제한, DART 020 조기중단.
-2. **대시보드 검증(읽기 전용):** 최대 보유 종목 수·버퍼·백테스트가 새로고침 후에도 도는지 확인.
-3. **사용 안내 보강:** `user_guide.py`에 최대 보유 종목 수(신규만 차단) 한 줄 설명.
-4. **BIOS VT-x 미리 확인** (제품 게이트 선작업 가능): 재부팅·BIOS에서 가상화 켠 뒤 Docker Desktop Engine 상태만 봐 두기. (Actions/`publish`는 A3 끝난 뒤.)
-5. **하지 말 것:** A3 재개 전 `publish_db_release`로 불완전 DB 올리기, accrual 백필 이중 실행, `pull_db_release`로 로컬 덮어쓰기.
+1. **A3 재개:** `.\.venv\Scripts\python.exe -u backfill_accrual_fcf.py --all-months --resume --sleep 0.5`
+2. **대시보드 UX 검증(읽기 전용):** 차트 스케일·낙폭/상승폭·회전율/ADV 상한·버퍼↔최대보유 하한 연동.
+3. **하지 말 것:** 불완전 DB `publish_db_release` / accrual 이중 실행 / `pull_db_release`로 로컬 덮어쓰기.
 
 ## 원칙
 - Perplexity는 참고용; 투자자문 고지. 호버마다 API 호출 금지(캐시).
