@@ -26,23 +26,13 @@ alwaysApply: true
 - 한 세션에 **Phase 전체를 억지로 몰아넣지 말 것**. A1→A2→A3… 단위로 커밋.
 - AI 매크로(`macro_ai_agent`) `sub_value` / `sub_quality` 키를 새 팩터에 맞춰 확장.
 - 가치 멀티플 `≤0`, 모멘텀 `≤-99.9` 는 결측 처리(기존 규칙 유지).
-- **완료:** Phase A–B, C8 `monthly_shares`, C9 `quarterly_fund` + `sales_g1y`/`op_g1y`/`ni_g1y`/`earn_surprise`(컨센서스 없는 YoY 근사).
-- **다음 (블로킹):** accrual/FCF 전 기간 백필 완료 → 로컬 커버리지 확인 → GitHub Actions 수동/재실행으로 Release 게이트 통과 확인 → (제품) BIOS/Docker → #3 상점.
+- **완료:** Phase A–B, C8 `monthly_shares`, C9 `quarterly_fund` + YoY 근사, **A3 accrual/FCF 백필**.
+- **다음 (제품 로드맵과 동일):** Actions `workflow_dispatch` 성공 확인 → `BETA_SKIP_AUTH_GATES=0` → #3 상점 틀. (상세는 `product-roadmap-ux.mdc` 합의된 실행 순서 0→7)
 
-### A3 accrual/FCF 백필 — 재개 체크리스트 (필수)
-- **상태:** `QUOTA_HALT@2022-05` (progress≈25/76, accrual≈48k). 한도 리셋 후 `--resume`.
-- **캐시:** `data_cache/dart_cache/*_2018_all.parquet`·`*_2025_all.parquet` 위주. 2019~2024는 채우는 중 → **며칠에 나눠** 가능.
-- **재개 명령 (한도·일반오류·Ctrl+C 후, 프로세스 1개만):**
-  ```powershell
-  cd C:\mybot
-  .\.venv\Scripts\python.exe -u backfill_accrual_fcf.py --all-months --resume --sleep 0.5
-  ```
-  - `--resume`: `accrual_fcf_progress.txt`의 `resume_month` (없으면 DB 첫 미완료월)부터.
-  - 월 안에서는 `skip_filled`로 이미 accrual+fcf 있는 종목 건너뜀.
-  - 한도(020)·Exception·KeyboardInterrupt 모두 `QUOTA_HALT@`/`ERROR_HALT@` + `resume_month` 기록 후 종료.
-  - 수동: `--from-month 2022-05`
-- **금지:** 백필 중 `pull_db_release` / 이중 실행 / 다른 DART 대량 writer 동시 실행.
-- 진행 확인: `data_cache/accrual_fcf_progress.txt`, `accrual_fcf_live.log`.
+### A3 accrual/FCF
+- **상태:** **DONE** (2026-07-25). 재개 불필요 시 `--resume` 생략.
+- 예비 키: `DART_API_KEY_BACKUP` / `_2`… (프로세스 1개만).
+- **금지:** Actions 실패용 빈 DB를 `pull`로 로컬 덮어쓰기. 건강 로컬만 `publish_db_release`.
 
 ## 데이터 무결성 (단기 → 장기)
 
